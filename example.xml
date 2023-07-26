@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!-- A comment before the root node -->
+<root xmlns="hello" xmlns:potato="potato">
+    <a>
+        <b>
+            before text
+            <c/>
+            <d>hello &#x0024;</d>
+            after text
+        </b>
+        <![CDATA[It's CDATA with a pretend entity &nbsp;]]>
+        <e><a/><a></a></e>
+        <a/>
+    </a>
+    <f attr1="potato" potato:attr2="another"></f>
+</root>
