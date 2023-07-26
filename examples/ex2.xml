@@ -1,0 +1,10 @@
+<root>
+    <ref to="456"/>
+    <thing id="123">Hello</thing>
+    <ref to="123"/>
+    <nested>
+        <more>
+            <thing id="456">Yup</thing>
+        </more>
+    </nested>
+</root>

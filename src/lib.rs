@@ -1,4 +1,4 @@
-mod model;
+pub mod model;
 pub mod select;
 
 use std::{io::BufRead, path::Path};
@@ -280,10 +280,9 @@ impl DocumentDb {
     pub fn child_nodes(&self, parent_node_id: usize) -> Result<Vec<model::Node>, rusqlite::Error> {
         let mut statement = self.conn.prepare(
             r#"
-            SELECT n.node_id, n.node_type, n.node_ns, n.node_name, n.node_value FROM nodes n
-                JOIN node_edges ne on n.node_id = ne.node_id
+            SELECT node_id, node_type, node_ns, node_name, node_value FROM nodes
                 WHERE parent_node_id = ?1
-                ORDER BY ne.node_order
+                ORDER BY node_order
         "#,
         )?;
 
@@ -423,7 +422,7 @@ impl DocumentDb {
         self.element(1)
     }
 
-    pub fn all_elements<F: FnMut(model::Element)>(
+    pub fn all_elements<F: FnMut(model::Element) -> bool>(
         &self,
         mut callback: F,
     ) -> Result<(), rusqlite::Error> {
@@ -440,7 +439,9 @@ impl DocumentDb {
         })?;
 
         while let Some(row) = rows.next() {
-            callback(row?);
+            if !callback(row?) {
+                break;
+            }
         }
 
         Ok(())
@@ -495,9 +496,10 @@ fn parse_start_event<R>(
                     Some(x) => Some(std::str::from_utf8(x.as_ref())?),
                     None => None,
                 };
+
                 let attr_name = x.key.local_name();
                 let attr_name = std::str::from_utf8(attr_name.as_ref())?;
-                let attr_value = std::str::from_utf8(x.value.as_ref())?;
+                let attr_value = &*x.decode_and_unescape_value(reader)?;
 
                 db.insert_attr(
                     node_id,
@@ -582,18 +584,33 @@ pub enum Error {
     Utf8(#[from] std::str::Utf8Error),
 }
 
-pub fn parse<R: BufRead, P: AsRef<Path>>(db_path: P, input: R) -> Result<DocumentDb, Error> {
+#[derive(Debug, Default)]
+pub struct ParseOptions {
+    pub ignore_whitespace: bool,
+}
+
+pub fn parse<R: BufRead, P: AsRef<Path>>(
+    db_path: P,
+    input: R,
+    options: ParseOptions,
+) -> Result<DocumentDb, Error> {
     let db = DocumentDb::create(db_path.as_ref())?;
-    _parse(db, input)
+    _parse(db, input, options)
 }
 
-pub fn parse_in_memory<R: BufRead>(input: R) -> Result<DocumentDb, Error> {
+pub fn parse_in_memory<R: BufRead>(input: R, options: ParseOptions) -> Result<DocumentDb, Error> {
     let db = DocumentDb::create_in_memory()?;
-    _parse(db, input)
+    _parse(db, input, options)
 }
 
-fn _parse<R: BufRead>(mut doc_db: DocumentDb, input: R) -> Result<DocumentDb, Error> {
+fn _parse<R: BufRead>(
+    mut doc_db: DocumentDb,
+    input: R,
+    options: ParseOptions,
+) -> Result<DocumentDb, Error> {
     let mut reader = Reader::from_reader(input);
+    reader.trim_text(options.ignore_whitespace);
+
     let mut parser_state = ParserState::default();
 
     let db = DocumentDbBuilder {
@@ -622,7 +639,7 @@ fn _parse<R: BufRead>(mut doc_db: DocumentDb, input: R) -> Result<DocumentDb, Er
                     NodeType::Text,
                     None,
                     None,
-                    Some(std::str::from_utf8(&event.as_ref())?),
+                    Some(&event.unescape()?.as_ref()),
                     reader.buffer_position(),
                     parser_state.current_order(),
                 )?;
@@ -646,7 +663,7 @@ fn _parse<R: BufRead>(mut doc_db: DocumentDb, input: R) -> Result<DocumentDb, Er
                     NodeType::Comment,
                     None,
                     None,
-                    Some(std::str::from_utf8(&event.as_ref())?),
+                    Some(&event.unescape()?.as_ref()),
                     reader.buffer_position(),
                     parser_state.current_order(),
                 )?;

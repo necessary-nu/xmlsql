@@ -4,8 +4,10 @@ use xmlsql::select::Selector;
 
 fn main() {
     let db = xmlsql::parse_in_memory(
-        BufReader::new(Cursor::new(include_str!("../example.xml"))),
-    ).unwrap();
+        BufReader::new(Cursor::new(include_str!("./example.xml"))),
+        Default::default(),
+    )
+    .unwrap();
 
     let sel = Selector::new("a").unwrap();
     let matches = sel.match_all(&db);

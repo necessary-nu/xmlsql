@@ -1,6 +1,6 @@
 use std::borrow::{Borrow, Cow};
 
-use cssparser::{CowRcStr, ParseError, SourceLocation};
+use cssparser::{ParseError, ToCss};
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::context::QuirksMode;
 use selectors::parser::{
@@ -44,7 +44,19 @@ impl Borrow<String> for Value {
     }
 }
 
-impl NonTSPseudoClass for Value {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PseudoClass {}
+
+impl ToCss for PseudoClass {
+    fn to_css<W>(&self, _dest: &mut W) -> std::fmt::Result
+    where
+        W: std::fmt::Write,
+    {
+        unimplemented!()
+    }
+}
+
+impl NonTSPseudoClass for PseudoClass {
     type Impl = Selectors;
 
     fn is_active_or_hover(&self) -> bool {
@@ -69,7 +81,7 @@ impl SelectorImpl for Selectors {
     type NamespacePrefix = Value;
     type BorrowedNamespaceUrl = String;
     type BorrowedLocalName = String;
-    type NonTSPseudoClass = Value;
+    type NonTSPseudoClass = PseudoClass;
     type PseudoElement = Value;
 }
 
@@ -268,18 +280,6 @@ impl<'i> Parser<'i> for TheParser {
     type Impl = Selectors;
     type Error = SelectorParseErrorKind<'i>;
 
-    fn parse_non_ts_pseudo_class(
-        &self,
-        location: SourceLocation,
-        name: CowRcStr<'i>,
-    ) -> Result<Value, ParseError<'i, SelectorParseErrorKind<'i>>> {
-        Err(
-            location.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
-                name,
-            )),
-        )
-    }
-
     fn namespace_for_prefix(
         &self,
         prefix: &<Self::Impl as SelectorImpl>::NamespacePrefix,
@@ -302,6 +302,38 @@ impl Selector {
             Ok(list) => Ok(Selector(list.0.into_iter().map(SelectorInner).collect())),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn match_one<'a>(&self, db: &'a DocumentDb) -> Option<model::Element> {
+        let mut context = matching::MatchingContext::new(
+            matching::MatchingMode::Normal,
+            None,
+            None,
+            QuirksMode::NoQuirks,
+        );
+
+        let mut matched = None;
+
+        db.all_elements(|element| {
+            let r = ElementRef {
+                db,
+                element: Cow::Borrowed(&element),
+            };
+
+            let x = self.0.iter().any(|s| {
+                matching::matches_selector(&s.0, 0, None, &r, &mut context, &mut |_, _| {})
+            });
+
+            if x {
+                matched = Some(element);
+                return false;
+            }
+
+            true
+        })
+        .unwrap();
+
+        matched
     }
 
     pub fn match_all<'a>(&self, db: &'a DocumentDb) -> Vec<model::Element> {
@@ -327,6 +359,8 @@ impl Selector {
             if x {
                 matched.push(element);
             }
+
+            true
         })
         .unwrap();
 
