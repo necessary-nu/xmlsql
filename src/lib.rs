@@ -9,10 +9,6 @@ use quick_xml::{
 };
 use rusqlite::{types::ToSqlOutput, Batch, OpenFlags, OptionalExtension, Row};
 
-pub struct DocumentDb {
-    conn: rusqlite::Connection,
-}
-
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum NodeType {
@@ -58,74 +54,17 @@ impl From<NodeType> for u8 {
     }
 }
 
-impl DocumentDb {
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
-        let conn = rusqlite::Connection::open_with_flags(
-            path.as_ref(),
-            OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )?;
-        Ok(Self { conn })
-    }
+pub struct DocumentDb {
+    conn: rusqlite::Connection,
+}
 
-    pub fn create_in_memory() -> Result<Self, rusqlite::Error> {
-        let conn = rusqlite::Connection::open_in_memory()?;
-        Self::_create(conn)
-    }
+struct DocumentDbBuilder<'a> {
+    conn: rusqlite::Transaction<'a>,
+}
 
-    pub fn create<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
-        let conn = rusqlite::Connection::open_with_flags(
-            path.as_ref(),
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-        )?;
-        Self::_create(conn)
-    }
-
-    fn _create(conn: rusqlite::Connection) -> Result<Self, rusqlite::Error> {
-        let mut batch = Batch::new(
-            &conn,
-            r#"
-            CREATE TABLE nodes (
-                node_id INTEGER PRIMARY KEY,
-                node_type INTEGER NOT NULL,
-                node_ns TEXT,
-                node_name TEXT,
-                node_value TEXT,
-
-                buffer_position INTEGER NOT NULL
-            );
-            
-            CREATE TABLE attrs (
-                attr_id INTEGER PRIMARY KEY,
-                attr_order INTEGER NOT NULL,
-                attr_ns TEXT,
-                attr_name TEXT NOT NULL,
-                attr_value TEXT NOT NULL,
-
-                parent_node_id INTEGER NOT NULL,
-                buffer_position INTEGER NOT NULL,
-
-                FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
-            );
-
-            CREATE TABLE node_edges (
-                parent_node_id INTEGER NOT NULL,
-                edge_order INTEGER NOT NULL,
-                node_id INTEGER NOT NULL,
-
-                FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id),
-                FOREIGN KEY (node_id) REFERENCES nodes(node_id)
-            );
-
-            INSERT INTO nodes (node_id, node_type, node_ns, node_name, node_value, buffer_position) VALUES (0, 0, NULL, NULL, NULL, 0);
-            INSERT INTO nodes (node_id, node_type, node_ns, node_name, node_value, buffer_position) VALUES (1, 1, NULL, NULL, NULL, 0);
-            "#,
-        );
-
-        while let Some(mut stmt) = batch.next()? {
-            stmt.execute([])?;
-        }
-
-        Ok(Self { conn })
+impl DocumentDbBuilder<'_> {
+    fn commit(self) -> rusqlite::Result<()> {
+        self.conn.commit()
     }
 
     pub fn insert_node(
@@ -136,24 +75,16 @@ impl DocumentDb {
         node_name: Option<&str>,
         node_value: Option<&str>,
         buffer_position: usize,
-        edge_order: usize,
+        node_order: usize,
     ) -> Result<usize, rusqlite::Error> {
         let node_id = self.conn.query_row(
             r#"
-            INSERT INTO nodes(node_type, node_ns, node_name, node_value, buffer_position)
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            INSERT INTO nodes(node_type, node_ns, node_name, node_value, buffer_position, parent_node_id, node_order)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             RETURNING node_id
         "#,
-            (node_type, node_ns, node_name, node_value, buffer_position),
+            (node_type, node_ns, node_name, node_value, buffer_position, parent_node_id, node_order),
             |r| r.get::<_, usize>(0),
-        )?;
-
-        self.conn.execute(
-            r#"
-            INSERT INTO node_edges(parent_node_id, edge_order, node_id)
-            VALUES (?1, ?2, ?3)
-        "#,
-            (parent_node_id, edge_order, node_id),
         )?;
 
         Ok(node_id)
@@ -187,32 +118,92 @@ impl DocumentDb {
         node_ns: Option<&str>,
         node_name: Option<&str>,
         buffer_position: usize,
-        edge_order: usize,
+        node_order: usize,
     ) -> Result<usize, rusqlite::Error> {
         self.conn.execute(
             r#"
             UPDATE nodes
-                SET node_ns = ?1, node_name = ?2, buffer_position = ?3
+                SET node_ns = ?1, node_name = ?2, buffer_position = ?3, node_order = ?4
                 WHERE node_id = 1
         "#,
-            (node_ns, node_name, buffer_position),
-        )?;
-
-        self.conn.execute(
-            r#"
-            INSERT INTO node_edges(parent_node_id, edge_order, node_id)
-            VALUES (?1, ?2, ?3)
-        "#,
-            (0, edge_order, 1),
+            (node_ns, node_name, buffer_position, node_order),
         )?;
 
         Ok(1)
+    }
+}
+
+impl DocumentDb {
+    fn create_in_memory() -> Result<Self, rusqlite::Error> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        Self::_create(conn)
+    }
+
+    fn create<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+        let conn = rusqlite::Connection::open_with_flags(
+            path.as_ref(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        )?;
+        Self::_create(conn)
+    }
+
+    fn _create(conn: rusqlite::Connection) -> Result<Self, rusqlite::Error> {
+        let mut batch = Batch::new(
+            &conn,
+            r#"
+            CREATE TABLE nodes (
+                node_id INTEGER PRIMARY KEY,
+                parent_node_id INTEGER NOT NULL,
+                node_order INTEGER NOT NULL,
+
+                node_type INTEGER NOT NULL,
+                node_ns TEXT,
+                node_name TEXT,
+                node_value TEXT,
+
+                buffer_position INTEGER NOT NULL,
+                FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id)
+            );
+            
+            CREATE TABLE attrs (
+                attr_id INTEGER PRIMARY KEY,
+                attr_order INTEGER NOT NULL,
+                attr_ns TEXT,
+                attr_name TEXT NOT NULL,
+                attr_value TEXT NOT NULL,
+
+                parent_node_id INTEGER NOT NULL,
+                buffer_position INTEGER NOT NULL,
+
+                FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
+            );
+
+            INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position)
+            VALUES
+                (0, 0, 0, 0, NULL, NULL, NULL, 0),
+                (1, 0, 0, 1, NULL, NULL, NULL, 0);
+            "#,
+        );
+
+        while let Some(mut stmt) = batch.next()? {
+            stmt.execute([])?;
+        }
+
+        Ok(Self { conn })
+    }
+
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+        let conn = rusqlite::Connection::open_with_flags(
+            path.as_ref(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        Ok(Self { conn })
     }
 
     pub fn parent_element_id(&self, node_id: usize) -> Result<usize, rusqlite::Error> {
         let node_id = self.conn.query_row(
             r#"
-                SELECT parent_node_id FROM node_edges WHERE node_id = ?1
+                SELECT parent_node_id FROM nodes WHERE node_id = ?1
             "#,
             [node_id],
             |r| r.get::<_, usize>(0),
@@ -223,11 +214,11 @@ impl DocumentDb {
     pub fn prev_sibling_element_id(&self, node_id: usize) -> Result<usize, rusqlite::Error> {
         let node_id = self.conn.query_row(
             r#"
-                SELECT parent_node_id FROM node_edges WHERE parent_node_id = (SELECT parent_node_id
-                    FROM node_edges
+                SELECT parent_node_id FROM nodes WHERE parent_node_id = (SELECT parent_node_id
+                    FROM nodes
                     WHERE node_id = ?1)
-                AND edge_order < (SELECT edge_order FROM node_edges WHERE node_id = ?1)
-                ORDER BY edge_order DESC LIMIT 1;
+                AND node_order < (SELECT node_order FROM nodes WHERE node_id = ?1)
+                ORDER BY node_order DESC LIMIT 1;
             "#,
             [node_id],
             |r| r.get::<_, usize>(0),
@@ -238,11 +229,11 @@ impl DocumentDb {
     pub fn next_sibling_element_id(&self, node_id: usize) -> Result<usize, rusqlite::Error> {
         let node_id = self.conn.query_row(
             r#"
-                SELECT parent_node_id FROM node_edges WHERE parent_node_id = (SELECT parent_node_id
-                    FROM node_edges
+                SELECT parent_node_id FROM nodes WHERE parent_node_id = (SELECT parent_node_id
+                    FROM nodes
                     WHERE node_id = ?1)
-                AND edge_order > (SELECT edge_order FROM node_edges WHERE node_id = ?1)
-                ORDER BY edge_order ASC LIMIT 1;
+                AND node_order > (SELECT node_order FROM nodes WHERE node_id = ?1)
+                ORDER BY node_order ASC LIMIT 1;
             "#,
             [node_id],
             |r| r.get::<_, usize>(0),
@@ -292,7 +283,7 @@ impl DocumentDb {
             SELECT n.node_id, n.node_type, n.node_ns, n.node_name, n.node_value FROM nodes n
                 JOIN node_edges ne on n.node_id = ne.node_id
                 WHERE parent_node_id = ?1
-                ORDER BY ne.edge_order
+                ORDER BY ne.node_order
         "#,
         )?;
 
@@ -313,10 +304,9 @@ impl DocumentDb {
     pub fn children(&self, parent_node_id: usize) -> Result<Vec<model::Element>, rusqlite::Error> {
         let mut statement = self.conn.prepare(
             r#"
-            SELECT n.node_id, n.node_ns, n.node_name FROM nodes n
-                JOIN node_edges ne on n.node_id = ne.node_id
-                WHERE parent_node_id = ?1 AND n.node_type = ?2
-                ORDER BY ne.edge_order
+            SELECT node_id, node_ns, node_name FROM nodes
+                WHERE parent_node_id = ?1 AND node_type = ?2
+                ORDER BY node_order
         "#,
         )?;
 
@@ -416,7 +406,7 @@ impl DocumentDb {
     pub fn has_children(&self, node_id: usize) -> Result<bool, rusqlite::Error> {
         let count = self.conn.query_row(
             r#"
-                SELECT COUNT(*) FROM node_edges WHERE parent_node_id = ?1
+                SELECT COUNT(*) FROM nodes WHERE parent_node_id = ?1
             "#,
             [node_id],
             |r| r.get::<_, usize>(0),
@@ -460,7 +450,7 @@ impl DocumentDb {
 fn parse_start_event<R>(
     reader: &quick_xml::Reader<R>,
     parser_state: &mut ParserState,
-    db: &DocumentDb,
+    db: &DocumentDbBuilder,
     event: &BytesStart<'_>,
 ) -> Result<(), Error> {
     let (local_name, prefix) = event.name().decompose();
@@ -602,9 +592,13 @@ pub fn parse_in_memory<R: BufRead>(input: R) -> Result<DocumentDb, Error> {
     _parse(db, input)
 }
 
-fn _parse<R: BufRead>(db: DocumentDb, input: R) -> Result<DocumentDb, Error> {
+fn _parse<R: BufRead>(mut doc_db: DocumentDb, input: R) -> Result<DocumentDb, Error> {
     let mut reader = Reader::from_reader(input);
     let mut parser_state = ParserState::default();
+
+    let db = DocumentDbBuilder {
+        conn: doc_db.conn.transaction()?,
+    };
 
     let mut buf = Vec::new();
     loop {
@@ -700,5 +694,7 @@ fn _parse<R: BufRead>(db: DocumentDb, input: R) -> Result<DocumentDb, Error> {
         buf.clear();
     }
 
-    Ok(db)
+    db.commit()?;
+
+    Ok(doc_db)
 }
