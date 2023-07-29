@@ -1,7 +1,11 @@
 pub mod model;
 pub mod select;
 
-use std::{io::BufRead, path::Path};
+use std::{
+    fmt::Debug,
+    io::BufRead,
+    path::{Path, PathBuf},
+};
 
 use quick_xml::{
     events::{BytesStart, Event},
@@ -54,8 +58,17 @@ impl From<NodeType> for u8 {
     }
 }
 
+#[derive(Debug)]
+enum Mode {
+    InMemory,
+    OnDisk,
+    TempDir(tempfile::TempDir),
+}
+
+#[derive(Debug)]
 pub struct DocumentDb {
     conn: rusqlite::Connection,
+    mode: Mode,
 }
 
 struct DocumentDbBuilder<'a> {
@@ -136,7 +149,14 @@ impl DocumentDbBuilder<'_> {
 impl DocumentDb {
     fn create_in_memory() -> Result<Self, rusqlite::Error> {
         let conn = rusqlite::Connection::open_in_memory()?;
-        Self::_create(conn)
+        Self::_create(conn, Mode::InMemory)
+    }
+
+    fn create_temp() -> Result<Self, rusqlite::Error> {
+        let tmp = tempfile::tempdir()
+            .map_err(|_| rusqlite::Error::InvalidPath(PathBuf::from(":temp:")))?;
+        let conn = rusqlite::Connection::open(tmp.path())?;
+        Self::_create(conn, Mode::TempDir(tmp))
     }
 
     fn create<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
@@ -144,10 +164,10 @@ impl DocumentDb {
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )?;
-        Self::_create(conn)
+        Self::_create(conn, Mode::OnDisk)
     }
 
-    fn _create(conn: rusqlite::Connection) -> Result<Self, rusqlite::Error> {
+    fn _create(conn: rusqlite::Connection, mode: Mode) -> Result<Self, rusqlite::Error> {
         let mut batch = Batch::new(
             &conn,
             r#"
@@ -189,7 +209,7 @@ impl DocumentDb {
             stmt.execute([])?;
         }
 
-        Ok(Self { conn })
+        Ok(Self { conn, mode })
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
@@ -197,7 +217,10 @@ impl DocumentDb {
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE,
         )?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            mode: Mode::OnDisk,
+        })
     }
 
     pub fn parent_element_id(&self, node_id: usize) -> Result<usize, rusqlite::Error> {
@@ -589,12 +612,20 @@ pub struct ParseOptions {
     pub ignore_whitespace: bool,
 }
 
-pub fn parse<R: BufRead, P: AsRef<Path>>(
+pub fn parse_to_disk<R: BufRead, P: AsRef<Path>>(
     db_path: P,
     input: R,
     options: ParseOptions,
 ) -> Result<DocumentDb, Error> {
     let db = DocumentDb::create(db_path.as_ref())?;
+    _parse(db, input, options)
+}
+
+pub fn parse_to_temp_file<R: BufRead>(
+    input: R,
+    options: ParseOptions,
+) -> Result<DocumentDb, Error> {
+    let db = DocumentDb::create_temp()?;
     _parse(db, input, options)
 }
 
