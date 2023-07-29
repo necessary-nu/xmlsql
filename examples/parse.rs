@@ -1,6 +1,6 @@
 use std::io::{BufReader, Cursor};
 
-use xmlsql::select::Selector;
+use xmlsql::Selector;
 
 fn main() {
     let db = xmlsql::parse_in_memory(

@@ -1,9 +1,9 @@
 use std::io::{BufReader, Cursor};
 
-use xmlsql::{select::Selector, ParseOptions};
+use xmlsql::{ParseOptions, Selector};
 
 fn main() {
-    let db = xmlsql::parse_in_memory(
+    let db = xmlsql::parse_to_temp_file(
         BufReader::new(Cursor::new(include_str!("./ex2.xml"))),
         ParseOptions {
             ignore_whitespace: true,

@@ -9,7 +9,8 @@ use selectors::parser::{
 use selectors::parser::{PseudoElement, SelectorParseErrorKind};
 use selectors::{self, matching, OpaqueElement};
 
-use crate::{model, DocumentDb};
+use crate::document::DocumentDb;
+use crate::model;
 
 #[derive(Debug, Clone)]
 pub struct Selectors;
@@ -304,7 +305,7 @@ impl Selector {
         }
     }
 
-    pub fn match_one<'a>(&self, db: &'a DocumentDb) -> Option<model::Element> {
+    pub fn match_one(&self, db: &DocumentDb) -> Option<model::Element> {
         let mut context = matching::MatchingContext::new(
             matching::MatchingMode::Normal,
             None,
@@ -336,7 +337,7 @@ impl Selector {
         matched
     }
 
-    pub fn match_all<'a>(&self, db: &'a DocumentDb) -> Vec<model::Element> {
+    pub fn match_all(&self, db: &DocumentDb) -> Vec<model::Element> {
         let mut context = matching::MatchingContext::new(
             matching::MatchingMode::Normal,
             None,
