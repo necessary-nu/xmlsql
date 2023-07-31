@@ -9,8 +9,10 @@
             after text
         </b>
         <![CDATA[It's CDATA with a pretend entity &nbsp;]]>
-        <e><a/><a></a></e>
+        <e><a/><a marked="yes"></a></e>
         <a/>
     </a>
     <f attr1="potato" potato:attr2="another"></f>
 </root>
+<?boop weird stuff ?>
+<!-- A comment after the root node -->

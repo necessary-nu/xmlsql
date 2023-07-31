@@ -1,6 +1,7 @@
 use std::borrow::{Borrow, Cow};
 
 use cssparser::{ParseError, ToCss};
+use rayon::prelude::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::context::QuirksMode;
 use selectors::parser::{
@@ -113,11 +114,6 @@ impl selectors::Element for ElementRef<'_> {
                 element: Cow::Owned(self.db.element(node_id).unwrap()),
                 db: self.db,
             })
-
-        // self.element.parent(self.document).map(|e| ElementRef {
-        //     document: self.document,
-        //     element: e,
-        // })
     }
 
     fn parent_node_is_shadow_root(&self) -> bool {
@@ -305,7 +301,16 @@ impl Selector {
         }
     }
 
-    pub fn match_one(&self, db: &DocumentDb) -> Option<model::Element> {
+    #[inline]
+    pub fn match_one(&self, db: &DocumentDb) -> Result<Option<model::Element>, rusqlite::Error> {
+        self.match_one_from(db, 0)
+    }
+
+    pub fn match_one_from(
+        &self,
+        db: &DocumentDb,
+        node_id: usize,
+    ) -> Result<Option<model::Element>, rusqlite::Error> {
         let mut context = matching::MatchingContext::new(
             matching::MatchingMode::Normal,
             None,
@@ -315,7 +320,9 @@ impl Selector {
 
         let mut matched = None;
 
-        db.all_elements(|element| {
+        for element in db.descendents(node_id)? {
+            let element = element?;
+
             let r = ElementRef {
                 db,
                 element: Cow::Borrowed(&element),
@@ -327,68 +334,52 @@ impl Selector {
 
             if x {
                 matched = Some(element);
-                return false;
+                break;
             }
+        }
 
-            true
-        })
-        .unwrap();
-
-        matched
+        Ok(matched)
     }
 
-    pub fn match_all(&self, db: &DocumentDb) -> Vec<model::Element> {
-        let mut context = matching::MatchingContext::new(
-            matching::MatchingMode::Normal,
-            None,
-            None,
-            QuirksMode::NoQuirks,
-        );
-
-        let mut matched = vec![];
-
-        db.all_elements(|element| {
-            let r = ElementRef {
-                db,
-                element: Cow::Borrowed(&element),
-            };
-
-            let x = self.0.iter().any(|s| {
-                matching::matches_selector(&s.0, 0, None, &r, &mut context, &mut |_, _| {})
-            });
-
-            if x {
-                matched.push(element);
-            }
-
-            true
-        })
-        .unwrap();
-
-        matched
-    }
-
-    /// Returns whether the given element matches this selector.
     #[inline]
-    pub fn matches(&self, db: &DocumentDb, element: &model::Element) -> bool {
+    pub fn match_all(self, db: &DocumentDb) -> Result<Vec<model::Element>, rusqlite::Error> {
+        self.match_all_from(db, 0)
+    }
+
+    pub fn match_all_from(
+        self,
+        db: &DocumentDb,
+        node_id: usize,
+    ) -> Result<Vec<model::Element>, rusqlite::Error> {
         let mut context = matching::MatchingContext::new(
             matching::MatchingMode::Normal,
             None,
             None,
             QuirksMode::NoQuirks,
         );
-        self.0.iter().any(|s| {
-            matching::matches_selector(
-                &s.0,
-                0,
-                None,
-                &ElementRef {
+
+        db.descendents(node_id)?
+            .filter_map(|element| {
+                let element = match element {
+                    Ok(element) => element,
+                    Err(e) => return Some(Err(e)),
+                };
+
+                let r = ElementRef {
                     db,
-                    element: Cow::Borrowed(element),
-                },
-                &mut context,
-                &mut |_, _| {},
-            )
-        })
+                    element: Cow::Borrowed(&element),
+                };
+
+                let x = self.0.iter().any(|s| {
+                    matching::matches_selector(&s.0, 0, None, &r, &mut context, &mut |_, _| {})
+                });
+
+                if x {
+                    Some(Ok(element))
+                } else {
+                    None
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()
     }
 }

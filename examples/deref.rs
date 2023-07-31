@@ -12,7 +12,7 @@ fn main() {
     .unwrap();
 
     let sel = Selector::new("ref[to]").unwrap();
-    let refs = sel.match_all(&db);
+    let refs = sel.match_all(&db).unwrap();
 
     println!("{:?}", &refs);
     let targets = refs
@@ -22,6 +22,7 @@ fn main() {
             Selector::new(&format!("[id='{}']", x.value))
                 .unwrap()
                 .match_one(&db)
+                .unwrap()
         })
         .collect::<Vec<_>>();
 

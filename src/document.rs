@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::{types::ToSqlOutput, Batch, OpenFlags, OptionalExtension, Row};
+use rusqlite::{types::ToSqlOutput, Batch, OpenFlags, OptionalExtension, Result, Row};
 
 use crate::model;
 
@@ -18,19 +18,19 @@ pub struct DocumentDb {
 }
 
 impl DocumentDb {
-    pub(crate) fn create_in_memory() -> Result<Self, rusqlite::Error> {
+    pub(crate) fn create_in_memory() -> Result<Self> {
         let conn = rusqlite::Connection::open_in_memory()?;
         Self::_create(conn, Mode::InMemory)
     }
 
-    pub(crate) fn create_temp() -> Result<Self, rusqlite::Error> {
+    pub(crate) fn create_temp() -> Result<Self> {
         let tmp = tempfile::tempdir()
             .map_err(|_| rusqlite::Error::InvalidPath(PathBuf::from(":temp:")))?;
         let conn = rusqlite::Connection::open(tmp.path().join("db"))?;
         Self::_create(conn, Mode::TempDir(tmp))
     }
 
-    pub(crate) fn create<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+    pub(crate) fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = rusqlite::Connection::open_with_flags(
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -38,7 +38,7 @@ impl DocumentDb {
         Self::_create(conn, Mode::OnDisk)
     }
 
-    fn _create(conn: rusqlite::Connection, mode: Mode) -> Result<Self, rusqlite::Error> {
+    fn _create(conn: rusqlite::Connection, mode: Mode) -> Result<Self> {
         let mut batch = Batch::new(
             &conn,
             r#"
@@ -83,7 +83,7 @@ impl DocumentDb {
         Ok(Self { conn, _mode: mode })
     }
 
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = rusqlite::Connection::open_with_flags(
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE,
@@ -94,7 +94,7 @@ impl DocumentDb {
         })
     }
 
-    pub fn parent_element_id(&self, node_id: usize) -> Result<usize, rusqlite::Error> {
+    pub fn parent_element_id(&self, node_id: usize) -> Result<usize> {
         let node_id = self.conn.query_row(
             r#"
                 SELECT parent_node_id FROM nodes WHERE node_id = ?1
@@ -105,7 +105,7 @@ impl DocumentDb {
         Ok(node_id)
     }
 
-    pub fn prev_sibling_element_id(&self, node_id: usize) -> Result<usize, rusqlite::Error> {
+    pub fn prev_sibling_element_id(&self, node_id: usize) -> Result<usize> {
         let node_id = self.conn.query_row(
             r#"
                 SELECT parent_node_id FROM nodes WHERE parent_node_id = (SELECT parent_node_id
@@ -120,7 +120,7 @@ impl DocumentDb {
         Ok(node_id)
     }
 
-    pub fn next_sibling_element_id(&self, node_id: usize) -> Result<usize, rusqlite::Error> {
+    pub fn next_sibling_element_id(&self, node_id: usize) -> Result<usize> {
         let node_id = self.conn.query_row(
             r#"
                 SELECT parent_node_id FROM nodes WHERE parent_node_id = (SELECT parent_node_id
@@ -135,10 +135,10 @@ impl DocumentDb {
         Ok(node_id)
     }
 
-    pub fn element(&self, node_id: usize) -> Result<model::Element, rusqlite::Error> {
+    pub fn element(&self, node_id: usize) -> Result<model::Element> {
         self.conn.query_row(
             r#"
-                SELECT node_ns, node_name FROM nodes WHERE node_id = ?1
+                SELECT node_ns, node_name FROM nodes WHERE node_id = ?1 AND node_type = 1
             "#,
             [node_id],
             |r| {
@@ -151,7 +151,7 @@ impl DocumentDb {
         )
     }
 
-    pub fn node(&self, node_id: usize) -> Result<model::Node, rusqlite::Error> {
+    pub fn node(&self, node_id: usize) -> Result<model::Node> {
         let raw_node = self.conn.query_row(
             r#"
                 SELECT node_type, node_ns, node_name, node_value FROM nodes WHERE node_id = ?1
@@ -171,16 +171,20 @@ impl DocumentDb {
         Ok(raw_node.into())
     }
 
-    pub fn child_nodes(&self, parent_node_id: usize) -> Result<Vec<model::Node>, rusqlite::Error> {
-        let mut statement = self.conn.prepare(
+    pub fn child_nodes(
+        &self,
+        parent_node_id: usize,
+    ) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
+        let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_type, node_ns, node_name, node_value FROM nodes
                 WHERE parent_node_id = ?1
+                AND node_id != 0
                 ORDER BY node_order
         "#,
         )?;
 
-        let iter = statement.query_map([parent_node_id], |r| {
+        statement.query_map([parent_node_id], |r| {
             Ok(model::RawNode {
                 node_id: r.get::<_, usize>(0)?,
                 node_type: NodeType::try_from(r.get::<_, u8>(1)?).unwrap(),
@@ -189,13 +193,14 @@ impl DocumentDb {
                 value: r.get::<_, Option<String>>(4)?,
             }
             .into())
-        })?;
-
-        iter.collect::<Result<Vec<_>, _>>()
+        })
     }
 
-    pub fn children(&self, parent_node_id: usize) -> Result<Vec<model::Element>, rusqlite::Error> {
-        let mut statement = self.conn.prepare(
+    pub fn children(
+        &self,
+        parent_node_id: usize,
+    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+        let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_ns, node_name FROM nodes
                 WHERE parent_node_id = ?1 AND node_type = ?2
@@ -203,18 +208,43 @@ impl DocumentDb {
         "#,
         )?;
 
-        let iter = statement.query_map([parent_node_id, NodeType::Element as usize], |r| {
+        statement.query_map([parent_node_id, NodeType::Element as usize], |r| {
             Ok(model::Element {
                 node_id: r.get::<_, usize>(0)?,
                 ns: r.get::<_, Option<String>>(1)?,
                 name: r.get::<_, String>(2)?,
             })
-        })?;
-
-        iter.collect::<Result<Vec<_>, _>>()
+        })
     }
 
-    pub fn attr(&self, attr_id: usize) -> Result<model::Attr, rusqlite::Error> {
+    pub fn children_by_name(
+        &self,
+        parent_node_id: usize,
+        element_name: &str,
+    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+        let statement = self.conn.prepare_cached(
+            r#"
+            SELECT node_id, node_ns, node_name FROM nodes
+                WHERE parent_node_id = ?1 
+                    AND node_type = ?2
+                    AND node_name = ?3
+                ORDER BY node_order
+        "#,
+        )?;
+
+        statement.query_map(
+            (parent_node_id, NodeType::Element as usize, element_name),
+            |r| {
+                Ok(model::Element {
+                    node_id: r.get::<_, usize>(0)?,
+                    ns: r.get::<_, Option<String>>(1)?,
+                    name: r.get::<_, String>(2)?,
+                })
+            },
+        )
+    }
+
+    pub fn attr(&self, attr_id: usize) -> Result<model::Attr> {
         self.conn.query_row(
             r#"
                 SELECT attr_ns, attr_name, attr_value FROM attrs WHERE attr_id = ?1
@@ -236,7 +266,7 @@ impl DocumentDb {
         node_id: usize,
         attr_name: &str,
         attr_ns: Option<&str>,
-    ) -> Result<Option<model::Attr>, rusqlite::Error> {
+    ) -> Result<Option<model::Attr>> {
         if let Some(attr_ns) = attr_ns {
             self.conn
                 .query_row(
@@ -276,29 +306,27 @@ impl DocumentDb {
         }
     }
 
-    pub fn attrs(&self, node_id: usize) -> Result<Vec<model::Attr>, rusqlite::Error> {
-        let mut statement = self.conn.prepare(
+    pub fn attrs(&self, node_id: usize) -> Result<impl Iterator<Item = Result<model::Attr>> + '_> {
+        let statement = self.conn.prepare(
             r#"
                 SELECT attr_id, attr_ns, attr_name, attr_value FROM attrs WHERE parent_node_id = ?1
             "#,
         )?;
 
-        let iter = statement.query_map([node_id], |r| {
+        statement.query_map([node_id], |r| {
             Ok(model::Attr {
                 attr_id: r.get::<_, usize>(0)?,
                 ns: r.get::<_, Option<String>>(1)?,
                 name: r.get::<_, String>(2)?,
                 value: r.get::<_, String>(3)?,
             })
-        })?;
-
-        iter.collect::<Result<Vec<_>, _>>()
+        })
     }
 
-    pub fn has_children(&self, node_id: usize) -> Result<bool, rusqlite::Error> {
+    pub fn has_children(&self, node_id: usize) -> Result<bool> {
         let count = self.conn.query_row(
             r#"
-                SELECT COUNT(*) FROM nodes WHERE parent_node_id = ?1
+                SELECT COUNT(*) FROM nodes WHERE parent_node_id = ?1 LIMIT 1
             "#,
             [node_id],
             |r| r.get::<_, usize>(0),
@@ -307,23 +335,33 @@ impl DocumentDb {
         Ok(count > 0)
     }
 
-    pub fn document_child_nodes(&self) -> Result<Vec<model::Node>, rusqlite::Error> {
+    pub fn document_child_nodes(&self) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
         self.child_nodes(0)
     }
 
-    pub fn root(&self) -> Result<model::Element, rusqlite::Error> {
+    pub fn root(&self) -> Result<model::Element> {
         self.element(1)
     }
 
-    pub fn all_elements<F: FnMut(model::Element) -> bool>(
+    pub fn descendents(
         &self,
-        mut callback: F,
-    ) -> Result<(), rusqlite::Error> {
-        // TODO: make this into a chunked iterator to save memory.
-        let mut stmt = self
-            .conn
-            .prepare("SELECT node_id, node_ns, node_name FROM nodes WHERE node_type = 1")?;
-        let rows = stmt.query_map([], |r: &Row<'_>| {
+        parent_node_id: usize,
+    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+        let stmt = self.conn.prepare_cached(
+            r#"
+            WITH RECURSIVE
+            descendents(parent_id) AS (
+                VALUES(?1)
+                UNION
+                SELECT node_id FROM nodes, descendents
+                WHERE nodes.parent_node_id = descendents.parent_id
+            )
+            SELECT node_id, node_ns, node_name FROM nodes
+            WHERE nodes.node_type = 1 AND nodes.parent_node_id IN descendents
+        "#,
+        )?;
+
+        let rows = stmt.query_map([parent_node_id], |r: &Row<'_>| {
             Ok(model::Element {
                 node_id: r.get(0)?,
                 ns: r.get(1)?,
@@ -331,13 +369,11 @@ impl DocumentDb {
             })
         })?;
 
-        for row in rows {
-            if !callback(row?) {
-                break;
-            }
-        }
+        Ok(rows)
+    }
 
-        Ok(())
+    pub fn all_elements(&self) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+        self.descendents(0)
     }
 }
 
@@ -355,7 +391,7 @@ pub enum NodeType {
 }
 
 impl rusqlite::ToSql for NodeType {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+    fn to_sql(&self) -> Result<rusqlite::types::ToSqlOutput<'_>> {
         Ok(ToSqlOutput::Owned(rusqlite::types::Value::Integer(
             *self as i64,
         )))

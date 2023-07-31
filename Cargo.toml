@@ -11,7 +11,8 @@ license = "Apache-2.0 OR MIT"
 [dependencies]
 cssparser = "0.28.1"
 quick-xml = "0.30.0"
-rusqlite = { version = "0.29.0", features = ["bundled"] }
+rayon = "1.7.0"
+rusqlite = { git = "https://github.com/necessary-nu/rusqlite", features = ["bundled"] }
 selectors = "0.23.0"
 tempfile = "3.7.0"
 thiserror = "1.0.44"
