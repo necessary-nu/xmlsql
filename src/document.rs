@@ -43,8 +43,8 @@ impl DocumentDb {
             &conn,
             r#"
             CREATE TABLE nodes (
-                node_id INTEGER PRIMARY KEY,
-                parent_node_id INTEGER NOT NULL,
+                node_id BIGINT PRIMARY KEY,
+                parent_node_id BIGINT NOT NULL,
                 node_order INTEGER NOT NULL,
 
                 node_type INTEGER NOT NULL,
@@ -52,19 +52,19 @@ impl DocumentDb {
                 node_name TEXT,
                 node_value TEXT,
 
-                buffer_position INTEGER NOT NULL,
+                buffer_position BIGINT NOT NULL,
                 FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id)
             );
             
             CREATE TABLE attrs (
-                attr_id INTEGER PRIMARY KEY,
+                attr_id BIGINT PRIMARY KEY,
                 attr_order INTEGER NOT NULL,
                 attr_ns TEXT,
                 attr_name TEXT NOT NULL,
                 attr_value TEXT NOT NULL,
 
-                parent_node_id INTEGER NOT NULL,
-                buffer_position INTEGER NOT NULL,
+                parent_node_id BIGINT NOT NULL,
+                buffer_position BIGINT NOT NULL,
 
                 FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
             );
@@ -169,6 +169,30 @@ impl DocumentDb {
         )?;
 
         Ok(raw_node.into())
+    }
+
+    pub fn buffer_position(&self, node_id: usize) -> Result<u64> {
+        let pos = self.conn.query_row(
+            r#"
+                SELECT buffer_position FROM nodes WHERE node_id = ?1
+            "#,
+            [node_id],
+            |r| Ok(r.get::<_, u64>(0)?),
+        )?;
+
+        Ok(pos)
+    }
+
+    pub fn attr_buffer_position(&self, attr_id: usize) -> Result<u64> {
+        let pos = self.conn.query_row(
+            r#"
+                SELECT buffer_position FROM attrs WHERE attr_id = ?1
+            "#,
+            [attr_id],
+            |r| Ok(r.get::<_, u64>(0)?),
+        )?;
+
+        Ok(pos)
     }
 
     pub fn child_nodes(

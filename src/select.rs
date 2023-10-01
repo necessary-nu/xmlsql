@@ -1,7 +1,6 @@
 use std::borrow::{Borrow, Cow};
 
 use cssparser::{ParseError, ToCss};
-use rayon::prelude::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::context::QuirksMode;
 use selectors::parser::{
