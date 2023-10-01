@@ -43,7 +43,7 @@ impl DocumentDb {
             &conn,
             r#"
             CREATE TABLE nodes (
-                node_id BIGINT PRIMARY KEY,
+                node_id INTEGER PRIMARY KEY,
                 parent_node_id BIGINT NOT NULL,
                 node_order INTEGER NOT NULL,
 
@@ -57,7 +57,7 @@ impl DocumentDb {
             );
             
             CREATE TABLE attrs (
-                attr_id BIGINT PRIMARY KEY,
+                attr_id INTEGER PRIMARY KEY,
                 attr_order INTEGER NOT NULL,
                 attr_ns TEXT,
                 attr_name TEXT NOT NULL,
