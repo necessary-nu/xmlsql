@@ -12,7 +12,7 @@ license = "Apache-2.0 OR MIT"
 cssparser = "0.28.1"
 quick-xml = "0.30.0"
 rayon = "1.7.0"
-rusqlite = { git = "https://github.com/necessary-nu/rusqlite", features = ["bundled"] }
+rusqlite = { git = "https://github.com/necessary-nu/rusqlite" }
 selectors = "0.23.0"
 tempfile = "3.7.0"
 thiserror = "1.0.44"
