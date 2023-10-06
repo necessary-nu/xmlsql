@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::Row;
 use uuid::Uuid;
 
-use crate::{select, DocumentDb, Selector};
+use crate::{DocumentDb, Selector};
 
 pub struct IgnoreRule {
     pub selector: Selector,
@@ -25,7 +25,8 @@ pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusql
     let mut ignored = HashMap::new();
 
     eprintln!("Creating ignore node rules...");
-    options.ignore.iter().for_each(|rule| {
+    options.ignore.iter().enumerate().for_each(|(n, rule)| {
+        eprintln!("Processing ignore rule {}...", n);
         let results = rule.selector.clone().match_all(&db).unwrap();
         results.into_iter().for_each(|x| {
             ignored.insert(x.node_id, rule);
@@ -41,7 +42,8 @@ pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusql
     let mut ignored_attrs = HashSet::new();
 
     eprintln!("Creating ignore attr rules...");
-    for (node_id, rule) in ignored {
+    for (n, (node_id, rule)) in ignored.into_iter().enumerate() {
+        eprintln!("Processing attr ignore rule {}...", n);
         for attr_name in rule.attrs.iter() {
             if let Some(attr) = db.attr_by_name(node_id, &attr_name, None).unwrap() {
                 ignored_attrs.insert(attr.attr_id);
