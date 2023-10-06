@@ -49,6 +49,9 @@ CREATE TABLE attrs (
     FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
 );
 
+CREATE INDEX idx_nodes_parent_node_id ON nodes(parent_node_id);
+CREATE INDEX idx_attrs_parent_node_id ON attrs(parent_node_id);
+
 INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position)
 VALUES
     (0, 0, 0, 0, NULL, NULL, NULL, 0),
@@ -339,7 +342,7 @@ impl DocumentDb {
     pub fn attr(&self, attr_id: usize) -> Result<model::Attr> {
         self.conn.query_row(
             r#"
-                SELECT attr_ns, attr_name, attr_value FROM attrs WHERE attr_id = ?1
+                SELECT attr_ns, attr_name, attr_value FROM attrs WHERE attr_id = ?1 LIMIT 1
             "#,
             [attr_id],
             |r| {
@@ -507,7 +510,7 @@ impl DocumentDb {
     pub fn inferred_type(&self, node_id: usize) -> Result<InferredType> {
         let statement = self.conn.prepare_cached(
             r#"
-                SELECT inferred_type FROM nodes WHERE node_id = ?1
+                SELECT inferred_type FROM nodes WHERE node_id = ?1 LIMIT 1
             "#,
         )?;
         let result = statement.query_row([node_id], |r| r.get::<_, String>(0))?;
@@ -517,7 +520,7 @@ impl DocumentDb {
     pub fn node_raw_value(&self, node_id: usize) -> Result<Option<String>> {
         let statement = self.conn.prepare_cached(
             r#"
-                SELECT node_value FROM nodes WHERE node_id = ?1
+                SELECT node_value FROM nodes WHERE node_id = ?1 LIMIT 1
             "#,
         )?;
         let result = statement.query_row([node_id], |r| r.get::<_, Option<String>>(0))?;
@@ -527,7 +530,7 @@ impl DocumentDb {
     pub fn attr_raw_value(&self, attr_id: usize) -> Result<Option<String>> {
         let statement = self.conn.prepare_cached(
             r#"
-                SELECT attr_value FROM attrs WHERE attr_id = ?1
+                SELECT attr_value FROM attrs WHERE attr_id = ?1 LIMIT 1
             "#,
         )?;
         let result = statement.query_row([attr_id], |r| r.get::<_, Option<String>>(0))?;
@@ -537,7 +540,7 @@ impl DocumentDb {
     pub fn attr_inferred_type(&self, attr_id: usize) -> Result<InferredType> {
         let statement = self.conn.prepare_cached(
             r#"
-                SELECT inferred_type FROM attrs WHERE attr_id = ?1
+                SELECT inferred_type FROM attrs WHERE attr_id = ?1 LIMIT 1
             "#,
         )?;
         let result = statement.query_row([attr_id], |r| r.get::<_, String>(0))?;
