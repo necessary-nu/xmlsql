@@ -24,6 +24,7 @@ pub struct Options {
 pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusqlite::Error> {
     let mut ignored = HashMap::new();
 
+    eprintln!("Creating ignore node rules...");
     options.ignore.iter().for_each(|rule| {
         let results = rule.selector.clone().match_all(&db).unwrap();
         results.into_iter().for_each(|x| {
@@ -39,6 +40,7 @@ pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusql
         .join(",");
     let mut ignored_attrs = HashSet::new();
 
+    eprintln!("Creating ignore attr rules...");
     for (node_id, rule) in ignored {
         for attr_name in rule.attrs.iter() {
             if let Some(attr) = db.attr_by_name(node_id, &attr_name, None).unwrap() {
@@ -53,6 +55,7 @@ pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusql
         .collect::<Vec<_>>()
         .join(",");
 
+    eprintln!("Creating tx...");
     let tx = db.conn.transaction().unwrap();
 
     let redaction_queries = [
@@ -67,7 +70,8 @@ pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusql
         format!(r#"UPDATE nodes SET node_value = '{{"redacted": true}}' WHERE inferred_type = 'duration' AND node_id NOT IN ({ignored_keys})"#),
     ];
 
-    for query in redaction_queries {
+    for (n, query) in redaction_queries.into_iter().enumerate() {
+        eprintln!("Running node redaction {n}...");
         tx.execute(
             &query,
             [],
@@ -86,13 +90,15 @@ pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusql
         format!(r#"UPDATE attrs SET attr_value = '{{"redacted": true}}' WHERE inferred_type = 'duration' AND attr_id NOT IN ({ignored_attr_keys})"#),
     ];
 
-    for query in attr_redaction_queries {
+    for (n, query) in attr_redaction_queries.into_iter().enumerate() {
+        eprintln!("Running attr redaction {n}...");
         tx.execute(
             &query,
             [],
         )?;
     }
 
+    eprintln!("Masking uuids...");
     if options.mask.uuids {
         let random_ns = uuid::Uuid::new_v4();
         
@@ -125,6 +131,7 @@ pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusql
         }
     }
 
+    eprintln!("Committing tx...");
     tx.commit().unwrap();
 
     // TODO: deal with each type's concept of a default value.
