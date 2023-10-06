@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use rusqlite::Row;
+use rusqlite::{Row, Transaction};
 use uuid::Uuid;
 
-use crate::{DocumentDb, Selector};
+use crate::{model::Node, DocumentDb, InferredType, Selector};
 
 pub struct IgnoreRule {
-    pub selector: Selector,
+    pub tag: String,
     pub value: bool,
     pub attrs: HashSet<String>,
 }
@@ -21,131 +21,198 @@ pub struct Options {
     // replace: Replace,
 }
 
-pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusqlite::Error> {
-    let mut ignored = HashMap::new();
+// let redaction_queries = [
+//     format!("UPDATE nodes SET node_value = '[redacted]' WHERE inferred_type = 'string' AND node_id NOT IN ({ignored_keys}) AND node_type < 5"),
+//     // format!("UPDATE nodes SET node_value = '[redacted]' WHERE inferred_type = 'uuid' AND node_id NOT IN ({ignored_keys})"),
+//     format!("UPDATE nodes SET node_value = '0' WHERE inferred_type = 'int' AND node_id NOT IN ({ignored_keys})"),
+//     format!("UPDATE nodes SET node_value = '0.123' WHERE inferred_type = 'float' AND node_id NOT IN ({ignored_keys})"),
+//     format!("UPDATE nodes SET node_value = '1970-01-01T00:00:00Z' WHERE inferred_type = 'datetime' AND node_id NOT IN ({ignored_keys})"),
+//     format!("UPDATE nodes SET node_value = '1970-01-01' WHERE inferred_type = 'date' AND node_id NOT IN ({ignored_keys})"),
+//     format!("UPDATE nodes SET node_value = '00:00:00' WHERE inferred_type = 'time' AND node_id NOT IN ({ignored_keys})"),
+//     format!("UPDATE nodes SET node_value = '12:34:56' WHERE inferred_type = 'duration' AND node_id NOT IN ({ignored_keys})"),
+//     format!(r#"UPDATE nodes SET node_value = '{{"redacted": true}}' WHERE inferred_type = 'duration' AND node_id NOT IN ({ignored_keys})"#),
+// ];
 
+fn scrub_node(
+    db: &DocumentDb,
+    tx: &Transaction<'_>,
+    node_id: usize,
+    options: &Options,
+    seed: Uuid,
+) {
+    let ty = db.inferred_type(node_id).unwrap();
+
+    let value = match ty {
+        InferredType::Empty | InferredType::Whitespace => {
+            return;
+        }
+        InferredType::String => "redacted",
+        InferredType::Boolean => {
+            return;
+        }
+        InferredType::Int => "0",
+        InferredType::Float => "0.123",
+        InferredType::Uuid => "00000000-0000-0000-0000-000000000000",
+        InferredType::DateTime => "1970-01-01T00:00:00Z",
+        InferredType::Time => "00:00:00",
+        InferredType::Date => "1970-01-01",
+        InferredType::Duration => "55:55:55",
+        InferredType::Json => {
+            return;
+        }
+    };
+
+    if options.mask.uuids && matches!(ty, InferredType::Uuid) {
+        let v = db.node_raw_value(node_id).unwrap().unwrap();
+        let uuid = Uuid::new_v5(&seed, v.as_bytes()).to_string();
+
+        tx.execute(
+            "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
+            (uuid, node_id),
+        )
+        .unwrap();
+    } else {
+        tx.execute(
+            "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
+            (value, node_id),
+        )
+        .unwrap();
+    }
+}
+
+fn scrub_attr(
+    db: &DocumentDb,
+    tx: &Transaction<'_>,
+    attr_id: usize,
+    options: &Options,
+    seed: Uuid,
+) {
+    let ty = db.attr_inferred_type(attr_id).unwrap();
+
+    let value = match ty {
+        InferredType::Empty | InferredType::Whitespace => {
+            return;
+        }
+        InferredType::String => "redacted",
+        InferredType::Boolean => {
+            return;
+        }
+        InferredType::Int => "0",
+        InferredType::Float => "0.123",
+        InferredType::Uuid => "00000000-0000-0000-0000-000000000000",
+        InferredType::DateTime => "1970-01-01T00:00:00Z",
+        InferredType::Time => "00:00:00",
+        InferredType::Date => "1970-01-01",
+        InferredType::Duration => "55:55:55",
+        InferredType::Json => {
+            return;
+        }
+    };
+
+    if options.mask.uuids && matches!(ty, InferredType::Uuid) {
+        let v = db.attr_raw_value(attr_id).unwrap().unwrap();
+        let uuid = Uuid::new_v5(&seed, v.as_bytes()).to_string();
+
+        tx.execute(
+            "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
+            (uuid, attr_id),
+        )
+        .unwrap();
+    } else {
+        tx.execute(
+            "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
+            (value, attr_id),
+        )
+        .unwrap();
+    }
+}
+
+pub fn redact(
+    db: &DocumentDb,
+    mut out_db: DocumentDb,
+    options: &Options,
+) -> Result<DocumentDb, rusqlite::Error> {
     eprintln!("Node count: {}", db.node_count()?);
     eprintln!("Attr count: {}", db.attr_count()?);
 
-    eprintln!("Creating ignore node rules...");
-    options.ignore.iter().enumerate().for_each(|(n, rule)| {
-        eprintln!("Processing ignore rule {}...", n);
-        let results = rule.selector.clone().match_all(&db).unwrap();
-        results.into_iter().for_each(|x| {
-            ignored.insert(x.node_id, rule);
-        });
-        // TODO: child nodes that are not elements if value = true
-    });
+    let seed = Uuid::new_v4();
 
-    let ignored_keys = ignored
-        .keys()
-        .map(|x| x.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut ignored_attrs = HashSet::new();
+    let tx = out_db.conn.transaction().unwrap();
+    let mut i = 0usize;
+    for node in db.all_elements().unwrap() {
+        i += 1;
 
-    eprintln!("Creating ignore attr rules...");
-    for (n, (node_id, rule)) in ignored.into_iter().enumerate() {
-        eprintln!("Processing attr ignore rule {}...", n);
-        for attr_name in rule.attrs.iter() {
-            if let Some(attr) = db.attr_by_name(node_id, &attr_name, None).unwrap() {
-                ignored_attrs.insert(attr.attr_id);
+        if i % 10000 == 0 {
+            eprintln!("Parsed {i} nodes...");
+        }
+
+        let node = node.unwrap();
+
+        let matched_rules = options
+            .ignore
+            .iter()
+            .filter(|x| x.tag == node.name)
+            .collect::<Vec<_>>();
+
+        if matched_rules.is_empty() {
+            scrub_node(&db, &tx, node.node_id, options, seed);
+
+            let child_nodes = db.child_nodes(node.node_id).unwrap();
+            for child_node in child_nodes {
+                let child_node = child_node.unwrap();
+                match child_node {
+                    Node::Text(x) => {
+                        scrub_node(&db, &tx, x.node_id, options, seed);
+                    }
+                    Node::Comment(x) => {
+                        scrub_node(&db, &tx, x.node_id, options, seed);
+                    }
+                    Node::CData(x) => {
+                        scrub_node(&db, &tx, x.node_id, options, seed);
+                    }
+                    _ => {}
+                }
+            }
+
+            let attrs = db.attrs(node.node_id).unwrap();
+            for attr in attrs {
+                let attr = attr.unwrap();
+                scrub_attr(&db, &tx, attr.attr_id, options, seed);
+            }
+        } else {
+            for rule in matched_rules {
+                if !rule.value {
+                    scrub_node(&db, &tx, node.node_id, options, seed);
+                    let child_nodes = db.child_nodes(node.node_id).unwrap();
+                    for child_node in child_nodes {
+                        let child_node = child_node.unwrap();
+                        match child_node {
+                            Node::Text(x) => {
+                                scrub_node(&db, &tx, x.node_id, options, seed);
+                            }
+                            Node::Comment(x) => {
+                                scrub_node(&db, &tx, x.node_id, options, seed);
+                            }
+                            Node::CData(x) => {
+                                scrub_node(&db, &tx, x.node_id, options, seed);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let attrs = db.attrs(node.node_id).unwrap();
+
+                for attr in attrs {
+                    let attr = attr.unwrap();
+                    if !rule.attrs.contains(&attr.name) {
+                        scrub_attr(&db, &tx, attr.attr_id, options, seed);
+                    }
+                }
             }
         }
     }
 
-    let ignored_attr_keys = ignored_attrs
-        .iter()
-        .map(|x| x.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-
-    eprintln!("Creating tx...");
-    let tx = db.conn.transaction().unwrap();
-
-    let redaction_queries = [
-        format!("UPDATE nodes SET node_value = '[redacted]' WHERE inferred_type = 'string' AND node_id NOT IN ({ignored_keys}) AND node_type < 5"),
-        // format!("UPDATE nodes SET node_value = '[redacted]' WHERE inferred_type = 'uuid' AND node_id NOT IN ({ignored_keys})"),
-        format!("UPDATE nodes SET node_value = '0' WHERE inferred_type = 'int' AND node_id NOT IN ({ignored_keys})"),
-        format!("UPDATE nodes SET node_value = '0.123' WHERE inferred_type = 'float' AND node_id NOT IN ({ignored_keys})"),
-        format!("UPDATE nodes SET node_value = '1970-01-01T00:00:00Z' WHERE inferred_type = 'datetime' AND node_id NOT IN ({ignored_keys})"),
-        format!("UPDATE nodes SET node_value = '1970-01-01' WHERE inferred_type = 'date' AND node_id NOT IN ({ignored_keys})"),
-        format!("UPDATE nodes SET node_value = '00:00:00' WHERE inferred_type = 'time' AND node_id NOT IN ({ignored_keys})"),
-        format!("UPDATE nodes SET node_value = '12:34:56' WHERE inferred_type = 'duration' AND node_id NOT IN ({ignored_keys})"),
-        format!(r#"UPDATE nodes SET node_value = '{{"redacted": true}}' WHERE inferred_type = 'duration' AND node_id NOT IN ({ignored_keys})"#),
-    ];
-
-    for (n, query) in redaction_queries.into_iter().enumerate() {
-        eprintln!("Running node redaction {n}...");
-        tx.execute(
-            &query,
-            [],
-        )?;
-    }
-
-    let attr_redaction_queries = [
-        format!("UPDATE attrs SET attr_value = '[redacted]' WHERE inferred_type = 'string' AND attr_id NOT IN ({ignored_attr_keys})"),
-        // format!("UPDATE attrs SET attr_value = '[redacted]' WHERE inferred_type = 'uuid' AND attr_id NOT IN ({ignored_attr_keys})"),
-        format!("UPDATE attrs SET attr_value = '0' WHERE inferred_type = 'int' AND attr_id NOT IN ({ignored_attr_keys})"),
-        format!("UPDATE attrs SET attr_value = '0.123' WHERE inferred_type = 'float' AND attr_id NOT IN ({ignored_attr_keys})"),
-        format!("UPDATE attrs SET attr_value = '1970-01-01T00:00:00Z' WHERE inferred_type = 'datetime' AND attr_id NOT IN ({ignored_attr_keys})"),
-        format!("UPDATE attrs SET attr_value = '1970-01-01' WHERE inferred_type = 'date' AND attr_id NOT IN ({ignored_attr_keys})"),
-        format!("UPDATE attrs SET attr_value = '00:00:00' WHERE inferred_type = 'time' AND attr_id NOT IN ({ignored_attr_keys})"),
-        format!("UPDATE attrs SET attr_value = '12:34:56' WHERE inferred_type = 'duration' AND attr_id NOT IN ({ignored_attr_keys})"),
-        format!(r#"UPDATE attrs SET attr_value = '{{"redacted": true}}' WHERE inferred_type = 'duration' AND attr_id NOT IN ({ignored_attr_keys})"#),
-    ];
-
-    for (n, query) in attr_redaction_queries.into_iter().enumerate() {
-        eprintln!("Running attr redaction {n}...");
-        tx.execute(
-            &query,
-            [],
-        )?;
-    }
-
-    eprintln!("Masking uuids...");
-    if options.mask.uuids {
-        let random_ns = uuid::Uuid::new_v4();
-        
-        let stmt = tx.prepare("SELECT node_id, node_value FROM nodes WHERE inferred_type = 'uuid'")?;
-        let result = stmt.query_map([], |r: &Row<'_>| {
-            Ok((r.get::<_, usize>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for row in result {
-            let (node_id, uuid_str) = row.unwrap();
-            let uuid = Uuid::parse_str(&uuid_str).unwrap();
-            let new_uuid =  uuid::Uuid::new_v5(&random_ns, uuid.as_bytes());
-            tx.execute(
-                "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
-                (new_uuid.to_string(), node_id),
-            )?;
-        }
-
-        let stmt = tx.prepare("SELECT attr_id, attr_value FROM attrs WHERE inferred_type = 'uuid'")?;
-        let result = stmt.query_map([], |r: &Row<'_>| {
-            Ok((r.get::<_, usize>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for row in result {
-            let (attr_id, uuid_str) = row.unwrap();
-            let uuid = Uuid::parse_str(&uuid_str).unwrap();
-            let new_uuid =  uuid::Uuid::new_v5(&random_ns, uuid.as_bytes());
-            tx.execute(
-                "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
-                (new_uuid.to_string(), attr_id),
-            )?;
-        }
-    }
-
-    eprintln!("Committing tx...");
     tx.commit().unwrap();
-
-    // TODO: deal with each type's concept of a default value.
-    
-    // db.conn.execute(
-    //     "UPDATE attrs SET attr_value = '[redacted]' WHERE inferred_type = 'string'",
-    //     [],
-    // )?;
-
-    // Find all UUIDs, replace with a UUIDv5 seeded with crime
-    Ok(db)
+    Ok(out_db)
 }

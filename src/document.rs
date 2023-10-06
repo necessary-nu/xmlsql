@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::{types::ToSqlOutput, Batch, OpenFlags, OptionalExtension, Result, Row};
 
 use crate::{
+    infer::InferredType,
     model,
-    writer::{Config, Print, State}, infer::InferredType,
+    writer::{Config, Print, State},
 };
 
 #[derive(Debug)]
@@ -437,7 +438,7 @@ impl DocumentDb {
     pub fn descendent_nodes(
         &self,
         parent_node_id: usize,
-    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+    ) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
         let stmt = self.conn.prepare_cached(
             r#"
             WITH RECURSIVE
@@ -453,11 +454,14 @@ impl DocumentDb {
         )?;
 
         let rows = stmt.query_map([parent_node_id], |r: &Row<'_>| {
-            Ok(model::Element {
-                node_id: r.get(0)?,
-                ns: r.get(1)?,
-                name: r.get(2)?,
-            })
+            Ok(model::RawNode {
+                node_id: r.get::<_, usize>(0)?,
+                node_type: NodeType::try_from(r.get::<_, u8>(1)?).unwrap(),
+                ns: r.get::<_, Option<String>>(2)?,
+                name: r.get::<_, Option<String>>(3)?,
+                value: r.get::<_, Option<String>>(4)?,
+            }
+            .into())
         })?;
 
         Ok(rows)
@@ -496,7 +500,7 @@ impl DocumentDb {
         self.descendents(0)
     }
 
-    pub fn all_nodes(&self) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+    pub fn all_nodes(&self) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
         self.descendent_nodes(0)
     }
 
@@ -508,6 +512,26 @@ impl DocumentDb {
         )?;
         let result = statement.query_row([node_id], |r| r.get::<_, String>(0))?;
         Ok(result.parse().unwrap())
+    }
+
+    pub fn node_raw_value(&self, node_id: usize) -> Result<Option<String>> {
+        let statement = self.conn.prepare_cached(
+            r#"
+                SELECT node_value FROM nodes WHERE node_id = ?1
+            "#,
+        )?;
+        let result = statement.query_row([node_id], |r| r.get::<_, Option<String>>(0))?;
+        Ok(result)
+    }
+
+    pub fn attr_raw_value(&self, attr_id: usize) -> Result<Option<String>> {
+        let statement = self.conn.prepare_cached(
+            r#"
+                SELECT attr_value FROM attrs WHERE attr_id = ?1
+            "#,
+        )?;
+        let result = statement.query_row([attr_id], |r| r.get::<_, Option<String>>(0))?;
+        Ok(result)
     }
 
     pub fn attr_inferred_type(&self, attr_id: usize) -> Result<InferredType> {

@@ -10,9 +10,9 @@ mod writer;
 use std::{io::BufRead, path::Path};
 
 pub use document::{DocumentDb, NodeType};
+pub use infer::{Inferred, InferredType};
 pub use parse::{Error, ParseOptions};
 pub use select::Selector;
-pub use infer::{Inferred, InferredType};
 
 pub fn parse_to_disk<R: BufRead, P: AsRef<Path>>(
     db_path: P,
