@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{types::ToSqlOutput, Batch, OpenFlags, OptionalExtension, Result, Row};
 
-use crate::model;
+use crate::{
+    model,
+    writer::{Config, Print, State}, infer::InferredType,
+};
 
 #[derive(Debug)]
 enum Mode {
@@ -17,63 +20,105 @@ pub struct DocumentDb {
     _mode: Mode,
 }
 
+const SQL_SIMPLE: &str = r#"
+CREATE TABLE nodes (
+    node_id INTEGER PRIMARY KEY,
+    parent_node_id BIGINT NOT NULL,
+    node_order INTEGER NOT NULL,
+
+    node_type INTEGER NOT NULL,
+    node_ns TEXT,
+    node_name TEXT,
+    node_value TEXT,
+
+    buffer_position BIGINT NOT NULL,
+    FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id)
+);
+
+CREATE TABLE attrs (
+    attr_id INTEGER PRIMARY KEY,
+    attr_order INTEGER NOT NULL,
+    attr_ns TEXT,
+    attr_name TEXT NOT NULL,
+    attr_value TEXT NOT NULL,
+
+    parent_node_id BIGINT NOT NULL,
+    buffer_position BIGINT NOT NULL,
+
+    FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
+);
+
+INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position)
+VALUES
+    (0, 0, 0, 0, NULL, NULL, NULL, 0),
+    (1, 0, 0, 1, NULL, NULL, NULL, 0);
+"#;
+
+const SQL_WITH_TYPES: &str = r#"
+CREATE TABLE nodes (
+    node_id INTEGER PRIMARY KEY,
+    parent_node_id BIGINT NOT NULL,
+    node_order INTEGER NOT NULL,
+
+    node_type INTEGER NOT NULL,
+    node_ns TEXT,
+    node_name TEXT,
+    node_value TEXT,
+
+    buffer_position BIGINT NOT NULL,
+    inferred_type TEXT NOT NULL,
+    FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id)
+);
+
+CREATE TABLE attrs (
+    attr_id INTEGER PRIMARY KEY,
+    attr_order INTEGER NOT NULL,
+    attr_ns TEXT,
+    attr_name TEXT NOT NULL,
+    attr_value TEXT NOT NULL,
+
+    parent_node_id BIGINT NOT NULL,
+    buffer_position BIGINT NOT NULL,
+    inferred_type TEXT NOT NULL,
+
+    FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
+);
+
+INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position, inferred_type)
+VALUES
+    (0, 0, 0, 0, NULL, NULL, NULL, 0, 'empty'),
+    (1, 0, 0, 1, NULL, NULL, NULL, 0, 'empty');
+"#;
+
 impl DocumentDb {
-    pub(crate) fn create_in_memory() -> Result<Self> {
+    pub(crate) fn create_in_memory(uses_type_inference: bool) -> Result<Self> {
         let conn = rusqlite::Connection::open_in_memory()?;
-        Self::_create(conn, Mode::InMemory)
+        Self::_create(conn, Mode::InMemory, uses_type_inference)
     }
 
-    pub(crate) fn create_temp() -> Result<Self> {
+    pub(crate) fn create_temp(uses_type_inference: bool) -> Result<Self> {
         let tmp = tempfile::tempdir()
             .map_err(|_| rusqlite::Error::InvalidPath(PathBuf::from(":temp:")))?;
         let conn = rusqlite::Connection::open(tmp.path().join("db"))?;
-        Self::_create(conn, Mode::TempDir(tmp))
+        Self::_create(conn, Mode::TempDir(tmp), uses_type_inference)
     }
 
-    pub(crate) fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub(crate) fn create<P: AsRef<Path>>(path: P, uses_type_inference: bool) -> Result<Self> {
         let conn = rusqlite::Connection::open_with_flags(
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )?;
-        Self::_create(conn, Mode::OnDisk)
+        Self::_create(conn, Mode::OnDisk, uses_type_inference)
     }
 
-    fn _create(conn: rusqlite::Connection, mode: Mode) -> Result<Self> {
+    fn _create(conn: rusqlite::Connection, mode: Mode, uses_type_inference: bool) -> Result<Self> {
         let mut batch = Batch::new(
             &conn,
-            r#"
-            CREATE TABLE nodes (
-                node_id INTEGER PRIMARY KEY,
-                parent_node_id BIGINT NOT NULL,
-                node_order INTEGER NOT NULL,
-
-                node_type INTEGER NOT NULL,
-                node_ns TEXT,
-                node_name TEXT,
-                node_value TEXT,
-
-                buffer_position BIGINT NOT NULL,
-                FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id)
-            );
-            
-            CREATE TABLE attrs (
-                attr_id INTEGER PRIMARY KEY,
-                attr_order INTEGER NOT NULL,
-                attr_ns TEXT,
-                attr_name TEXT NOT NULL,
-                attr_value TEXT NOT NULL,
-
-                parent_node_id BIGINT NOT NULL,
-                buffer_position BIGINT NOT NULL,
-
-                FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
-            );
-
-            INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position)
-            VALUES
-                (0, 0, 0, 0, NULL, NULL, NULL, 0),
-                (1, 0, 0, 1, NULL, NULL, NULL, 0);
-            "#,
+            if uses_type_inference {
+                SQL_WITH_TYPES
+            } else {
+                SQL_SIMPLE
+            },
         );
 
         while let Some(mut stmt) = batch.next()? {
@@ -177,7 +222,7 @@ impl DocumentDb {
                 SELECT buffer_position FROM nodes WHERE node_id = ?1
             "#,
             [node_id],
-            |r| Ok(r.get::<_, u64>(0)?),
+            |r| r.get::<_, u64>(0),
         )?;
 
         Ok(pos)
@@ -189,7 +234,7 @@ impl DocumentDb {
                 SELECT buffer_position FROM attrs WHERE attr_id = ?1
             "#,
             [attr_id],
-            |r| Ok(r.get::<_, u64>(0)?),
+            |r| r.get::<_, u64>(0),
         )?;
 
         Ok(pos)
@@ -367,6 +412,35 @@ impl DocumentDb {
         self.element(1)
     }
 
+    pub fn descendent_nodes(
+        &self,
+        parent_node_id: usize,
+    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+        let stmt = self.conn.prepare_cached(
+            r#"
+            WITH RECURSIVE
+            descendents(parent_id) AS (
+                VALUES(?1)
+                UNION
+                SELECT node_id FROM nodes, descendents
+                WHERE nodes.parent_node_id = descendents.parent_id
+            )
+            SELECT node_id, node_ns, node_name FROM nodes
+            WHERE nodes.parent_node_id IN descendents
+        "#,
+        )?;
+
+        let rows = stmt.query_map([parent_node_id], |r: &Row<'_>| {
+            Ok(model::Element {
+                node_id: r.get(0)?,
+                ns: r.get(1)?,
+                name: r.get(2)?,
+            })
+        })?;
+
+        Ok(rows)
+    }
+
     pub fn descendents(
         &self,
         parent_node_id: usize,
@@ -398,6 +472,45 @@ impl DocumentDb {
 
     pub fn all_elements(&self) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
         self.descendents(0)
+    }
+
+    pub fn all_nodes(&self) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+        self.descendent_nodes(0)
+    }
+
+    pub fn inferred_type(&self, node_id: usize) -> Result<InferredType> {
+        let statement = self.conn.prepare_cached(
+            r#"
+                SELECT inferred_type FROM nodes WHERE node_id = ?1
+            "#,
+        )?;
+        let result = statement.query_row([node_id], |r| r.get::<_, String>(0))?;
+        Ok(result.parse().unwrap())
+    }
+
+    pub fn attr_inferred_type(&self, attr_id: usize) -> Result<InferredType> {
+        let statement = self.conn.prepare_cached(
+            r#"
+                SELECT inferred_type FROM attrs WHERE attr_id = ?1
+            "#,
+        )?;
+        let result = statement.query_row([attr_id], |r| r.get::<_, String>(0))?;
+        Ok(result.parse().unwrap())
+    }
+
+    #[inline]
+    pub fn to_string_pretty(&self) -> String {
+        let mut s = vec![];
+        self.print(&mut s, &Config::default_pretty(), &State::new(self, true))
+            .unwrap();
+        String::from_utf8(s).expect("invalid UTF-8")
+    }
+
+    #[inline]
+    pub fn to_string_pretty_with_config(&self, config: &crate::writer::Config) -> String {
+        let mut s = vec![];
+        self.print(&mut s, config, &State::new(self, true)).unwrap();
+        String::from_utf8(s).expect("invalid UTF-8")
     }
 }
 

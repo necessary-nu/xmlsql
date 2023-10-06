@@ -115,3 +115,17 @@ pub enum Node {
     Doctype(Doctype),
     ProcessingInstruction(ProcessingInstruction),
 }
+
+impl Node {
+    pub fn node_id(&self) -> usize {
+        match self {
+            Node::Element(x) => x.node_id,
+            Node::Text(x) => x.node_id,
+            Node::Comment(x) => x.node_id,
+            Node::CData(x) => x.node_id,
+            Node::Declaration(x) => x.node_id,
+            Node::Doctype(x) => x.node_id,
+            Node::ProcessingInstruction(x) => x.node_id,
+        }
+    }
+}

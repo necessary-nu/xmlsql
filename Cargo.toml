@@ -14,5 +14,9 @@ quick-xml = "0.30.0"
 rayon = "1.7.0"
 rusqlite = { git = "https://github.com/necessary-nu/rusqlite", branch = "feature/unbundle" }
 selectors = "0.23.0"
+serde_json = "1.0.107"
+speedate = "0.12.0"
 tempfile = "3.7.0"
 thiserror = "1.0.44"
+unic-ucd = "0.9.0"
+uuid = { version = "1.4.1", features = ["v5", "v4"] }

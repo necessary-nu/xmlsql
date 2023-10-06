@@ -149,6 +149,7 @@ pub enum Error {
 #[derive(Debug, Default)]
 pub struct ParseOptions {
     pub ignore_whitespace: bool,
+    pub infer_types: bool,
 }
 
 pub(crate) fn parse<R: BufRead>(
@@ -163,6 +164,7 @@ pub(crate) fn parse<R: BufRead>(
 
     let db = DocumentDbBuilder {
         conn: doc_db.conn.transaction()?,
+        infer_types: options.infer_types,
     };
 
     let mut buf = Vec::new();
