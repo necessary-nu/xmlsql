@@ -24,6 +24,9 @@ pub struct Options {
 pub fn redact(mut db: DocumentDb, options: &Options) -> Result<DocumentDb, rusqlite::Error> {
     let mut ignored = HashMap::new();
 
+    eprintln!("Node count: {}", db.node_count()?);
+    eprintln!("Attr count: {}", db.attr_count()?);
+
     eprintln!("Creating ignore node rules...");
     options.ignore.iter().enumerate().for_each(|(n, rule)| {
         eprintln!("Processing ignore rule {}...", n);

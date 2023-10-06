@@ -139,6 +139,28 @@ impl DocumentDb {
         })
     }
 
+    pub fn node_count(&self) -> Result<usize> {
+        let count = self.conn.query_row(
+            r#"
+                SELECT COUNT(*) FROM nodes
+            "#,
+            [],
+            |r| r.get::<_, usize>(0),
+        )?;
+        Ok(count)
+    }
+
+    pub fn attr_count(&self) -> Result<usize> {
+        let count = self.conn.query_row(
+            r#"
+                SELECT COUNT(*) FROM attrs
+            "#,
+            [],
+            |r| r.get::<_, usize>(0),
+        )?;
+        Ok(count)
+    }
+
     pub fn parent_element_id(&self, node_id: usize) -> Result<usize> {
         let node_id = self.conn.query_row(
             r#"
