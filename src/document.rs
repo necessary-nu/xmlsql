@@ -88,6 +88,9 @@ CREATE TABLE attrs (
     FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
 );
 
+CREATE INDEX idx_nodes_parent_node_id ON nodes(parent_node_id);
+CREATE INDEX idx_attrs_parent_node_id ON attrs(parent_node_id);
+
 INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position, inferred_type)
 VALUES
     (0, 0, 0, 0, NULL, NULL, NULL, 0, 'empty'),
