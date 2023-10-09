@@ -83,7 +83,7 @@ fn scrub(
         InferredType::Date => "1970-01-01",
         InferredType::Duration => "55:55:55",
         InferredType::Json => {
-            return;
+            r#"{"[redacted]": true}"#
         }
     };
 
