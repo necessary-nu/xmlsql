@@ -194,27 +194,33 @@ pub fn redact(
             }
         } else {
             for rule in matched_rules {
+                let child_nodes = db.child_nodes(node.node_id).unwrap();
                 if !rule.value {
                     scrub_node(&db, &tx, node.node_id, ty, options, seed);
-                    let child_nodes = db.child_nodes(node.node_id).unwrap();
-                    for child_node in child_nodes {
-                        let child_node = child_node.unwrap();
-                        let ty = db.inferred_type(child_node.node_id()).unwrap();
-                        match child_node {
-                            Node::Text(x) => {
-                                mask_node(db, &tx, x.node_id, ty, options, seed);
+                }
+                for child_node in child_nodes {
+                    let child_node = child_node.unwrap();
+                    let ty = db.inferred_type(child_node.node_id()).unwrap();
+                    match child_node {
+                        Node::Text(x) => {
+                            mask_node(db, &tx, x.node_id, ty, options, seed);
+                            if !rule.value {
                                 scrub_node(&db, &tx, x.node_id, ty, options, seed);
                             }
-                            Node::Comment(x) => {
-                                mask_node(db, &tx, x.node_id, ty, options, seed);
-                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
-                            }
-                            Node::CData(x) => {
-                                mask_node(db, &tx, x.node_id, ty, options, seed);
-                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
-                            }
-                            _ => {}
                         }
+                        Node::Comment(x) => {
+                            mask_node(db, &tx, x.node_id, ty, options, seed);
+                            if !rule.value {
+                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                            }
+                        }
+                        Node::CData(x) => {
+                            mask_node(db, &tx, x.node_id, ty, options, seed);
+                            if !rule.value {
+                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
@@ -223,8 +229,9 @@ pub fn redact(
                 for attr in attrs {
                     let attr = attr.unwrap();
                     let ty = db.attr_inferred_type(attr.attr_id).unwrap();
+
+                    mask_attr(db, &tx, attr.attr_id, ty, options, seed);
                     if !rule.attrs.contains(&attr.name) {
-                        mask_attr(db, &tx, attr.attr_id, ty, options, seed);
                         scrub_attr(&db, &tx, attr.attr_id, ty, options, seed);
                     }
                 }
