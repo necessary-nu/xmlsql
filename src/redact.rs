@@ -21,18 +21,6 @@ pub struct Options {
     // replace: Replace,
 }
 
-// let redaction_queries = [
-//     format!("UPDATE nodes SET node_value = '[redacted]' WHERE inferred_type = 'string' AND node_id NOT IN ({ignored_keys}) AND node_type < 5"),
-//     // format!("UPDATE nodes SET node_value = '[redacted]' WHERE inferred_type = 'uuid' AND node_id NOT IN ({ignored_keys})"),
-//     format!("UPDATE nodes SET node_value = '0' WHERE inferred_type = 'int' AND node_id NOT IN ({ignored_keys})"),
-//     format!("UPDATE nodes SET node_value = '0.123' WHERE inferred_type = 'float' AND node_id NOT IN ({ignored_keys})"),
-//     format!("UPDATE nodes SET node_value = '1970-01-01T00:00:00Z' WHERE inferred_type = 'datetime' AND node_id NOT IN ({ignored_keys})"),
-//     format!("UPDATE nodes SET node_value = '1970-01-01' WHERE inferred_type = 'date' AND node_id NOT IN ({ignored_keys})"),
-//     format!("UPDATE nodes SET node_value = '00:00:00' WHERE inferred_type = 'time' AND node_id NOT IN ({ignored_keys})"),
-//     format!("UPDATE nodes SET node_value = '12:34:56' WHERE inferred_type = 'duration' AND node_id NOT IN ({ignored_keys})"),
-//     format!(r#"UPDATE nodes SET node_value = '{{"redacted": true}}' WHERE inferred_type = 'duration' AND node_id NOT IN ({ignored_keys})"#),
-// ];
-
 fn scrub_node(
     db: &DocumentDb,
     tx: &Transaction<'_>,
@@ -64,7 +52,7 @@ fn scrub_node(
 
     if options.mask.uuids && matches!(ty, InferredType::Uuid) {
         let v = db.node_raw_value(node_id).unwrap().unwrap();
-        let uuid = Uuid::new_v5(&seed, v.as_bytes()).to_string();
+        let uuid = Uuid::new_v5(&seed, v.trim().as_bytes()).to_string();
 
         tx.execute(
             "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
