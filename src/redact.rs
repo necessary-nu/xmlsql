@@ -1,14 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use rusqlite::{Row, Transaction};
+use rusqlite::Transaction;
 use uuid::Uuid;
 
-use crate::{model::Node, DocumentDb, InferredType, Selector};
+use crate::{model::Node, DocumentDb, InferredType};
 
 pub struct IgnoreRule {
-    pub tag: String,
-    pub value: bool,
-    pub attrs: HashSet<String>,
+    pub match_tag: String,
+    pub allow_value: bool,
+    pub allow_attrs: HashSet<String>,
 }
 
 pub struct Mask {
@@ -21,65 +21,48 @@ pub struct Options {
     // replace: Replace,
 }
 
-fn scrub_node(
-    db: &DocumentDb,
-    tx: &Transaction<'_>,
-    node_id: usize,
-    ty: InferredType,
-    options: &Options,
-    seed: Uuid,
-) {
-    let value = match ty {
-        InferredType::Empty | InferredType::Whitespace => {
-            return;
-        }
-        InferredType::String => "[redacted]",
-        InferredType::Boolean => {
-            return;
-        }
-        InferredType::Int => "0",
-        InferredType::Float => "0.123",
-        InferredType::Uuid => "00000000-0000-0000-0000-000000000000",
-        InferredType::DateTime => "1970-01-01T00:00:00Z",
-        InferredType::Time => "00:00:00",
-        InferredType::Date => "1970-01-01",
-        InferredType::Duration => "55:55:55",
-        InferredType::Json => {
-            return;
-        }
-    };
-
-    tx.execute(
-        "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
-        (value, node_id),
-    )
-    .unwrap();
+#[derive(Debug, Clone, Copy)]
+enum Id {
+    Node(usize),
+    Attr(usize),
 }
 
-fn mask_node(
-    db: &DocumentDb,
-    tx: &Transaction<'_>,
-    node_id: usize,
-    ty: InferredType,
-    options: &Options,
-    seed: Uuid,
-) {
-    if options.mask.uuids && matches!(ty, InferredType::Uuid) {
-        let v = db.node_raw_value(node_id).unwrap().unwrap();
+fn handle_uuid(db: &DocumentDb, tx: &Transaction<'_>, id: Id, options: &Options, seed: Uuid) {
+    if options.mask.uuids {
+        let v = match id {
+            Id::Node(node_id) => db.node_raw_value(node_id).unwrap().unwrap(),
+            Id::Attr(attr_id) => db.attr_raw_value(attr_id).unwrap().unwrap(),
+        };
         let uuid = Uuid::new_v5(&seed, v.trim().as_bytes()).to_string();
-
-        tx.execute(
-            "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
-            (uuid, node_id),
-        )
-        .unwrap();
+        set_value(id, tx, &uuid);
+    } else {
+        set_value(id, tx, "00000000-0000-0000-0000-000000000000");
     }
 }
 
-fn scrub_attr(
+fn set_value(id: Id, tx: &Transaction<'_>, value: &str) {
+    match id {
+        Id::Node(node_id) => {
+            tx.execute(
+                "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
+                (value, node_id),
+            )
+            .unwrap();
+        }
+        Id::Attr(attr_id) => {
+            tx.execute(
+                "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
+                (value, attr_id),
+            )
+            .unwrap();
+        }
+    }
+}
+
+fn scrub(
     db: &DocumentDb,
     tx: &Transaction<'_>,
-    attr_id: usize,
+    id: Id,
     ty: InferredType,
     options: &Options,
     seed: Uuid,
@@ -94,7 +77,7 @@ fn scrub_attr(
         }
         InferredType::Int => "0",
         InferredType::Float => "0.123",
-        InferredType::Uuid => "00000000-0000-0000-0000-000000000000",
+        InferredType::Uuid => return handle_uuid(db, tx, id, options, seed),
         InferredType::DateTime => "1970-01-01T00:00:00Z",
         InferredType::Time => "00:00:00",
         InferredType::Date => "1970-01-01",
@@ -104,31 +87,7 @@ fn scrub_attr(
         }
     };
 
-    tx.execute(
-        "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
-        (value, attr_id),
-    )
-    .unwrap();
-}
-
-fn mask_attr(
-    db: &DocumentDb,
-    tx: &Transaction<'_>,
-    attr_id: usize,
-    ty: InferredType,
-    options: &Options,
-    seed: Uuid,
-) {
-    if options.mask.uuids && matches!(ty, InferredType::Uuid) {
-        let v = db.attr_raw_value(attr_id).unwrap().unwrap();
-        let uuid = Uuid::new_v5(&seed, v.as_bytes()).to_string();
-
-        tx.execute(
-            "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
-            (uuid, attr_id),
-        )
-        .unwrap();
-    }
+    set_value(id, tx, value);
 }
 
 pub fn redact(
@@ -136,6 +95,7 @@ pub fn redact(
     mut out_db: DocumentDb,
     options: &Options,
 ) -> Result<DocumentDb, rusqlite::Error> {
+    eprintln!("Element count: {}", db.element_count()?);
     eprintln!("Node count: {}", db.node_count()?);
     eprintln!("Attr count: {}", db.attr_count()?);
 
@@ -147,7 +107,7 @@ pub fn redact(
         i += 1;
 
         if i % 10000 == 0 {
-            eprintln!("Parsed {i} nodes...");
+            eprintln!("Parsed {i} elements...");
         }
 
         let node = node.unwrap();
@@ -155,14 +115,13 @@ pub fn redact(
         let matched_rules = options
             .ignore
             .iter()
-            .filter(|x| x.tag == node.name)
+            .filter(|x| x.match_tag == node.name)
             .collect::<Vec<_>>();
 
         let ty = db.inferred_type(node.node_id).unwrap();
-        mask_node(db, &tx, node.node_id, ty, options, seed);
 
         if matched_rules.is_empty() {
-            scrub_node(&db, &tx, node.node_id, ty, options, seed);
+            scrub(&db, &tx, Id::Node(node.node_id), ty, options, seed);
 
             let child_nodes = db.child_nodes(node.node_id).unwrap();
             for child_node in child_nodes {
@@ -170,16 +129,13 @@ pub fn redact(
                 let ty = db.inferred_type(node.node_id).unwrap();
                 match child_node {
                     Node::Text(x) => {
-                        mask_node(db, &tx, x.node_id, ty, options, seed);
-                        scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                        scrub(db, &tx, Id::Node(x.node_id), ty, options, seed);
                     }
                     Node::Comment(x) => {
-                        mask_node(db, &tx, x.node_id, ty, options, seed);
-                        scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                        scrub(db, &tx, Id::Node(x.node_id), ty, options, seed);
                     }
                     Node::CData(x) => {
-                        mask_node(db, &tx, x.node_id, ty, options, seed);
-                        scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                        scrub(db, &tx, Id::Node(x.node_id), ty, options, seed);
                     }
                     _ => {}
                 }
@@ -189,35 +145,33 @@ pub fn redact(
             for attr in attrs {
                 let attr = attr.unwrap();
                 let ty = db.attr_inferred_type(attr.attr_id).unwrap();
-                mask_attr(db, &tx, attr.attr_id, ty, options, seed);
-                scrub_attr(&db, &tx, attr.attr_id, ty, options, seed);
+                scrub(db, &tx, Id::Attr(attr.attr_id), ty, options, seed);
             }
         } else {
             for rule in matched_rules {
                 let child_nodes = db.child_nodes(node.node_id).unwrap();
-                if !rule.value {
-                    scrub_node(&db, &tx, node.node_id, ty, options, seed);
+                if !rule.allow_value {
+                    scrub(&db, &tx, Id::Node(node.node_id), ty, options, seed);
                 }
                 for child_node in child_nodes {
                     let child_node = child_node.unwrap();
-                    let ty = db.inferred_type(child_node.node_id()).unwrap();
                     match child_node {
                         Node::Text(x) => {
-                            mask_node(db, &tx, x.node_id, ty, options, seed);
-                            if !rule.value {
-                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                            if !rule.allow_value {
+                                let ty = db.inferred_type(x.node_id).unwrap();
+                                scrub(&db, &tx, Id::Node(x.node_id), ty, options, seed);
                             }
                         }
                         Node::Comment(x) => {
-                            mask_node(db, &tx, x.node_id, ty, options, seed);
-                            if !rule.value {
-                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                            if !rule.allow_value {
+                                let ty = db.inferred_type(x.node_id).unwrap();
+                                scrub(&db, &tx, Id::Node(x.node_id), ty, options, seed);
                             }
                         }
                         Node::CData(x) => {
-                            mask_node(db, &tx, x.node_id, ty, options, seed);
-                            if !rule.value {
-                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
+                            if !rule.allow_value {
+                                let ty = db.inferred_type(x.node_id).unwrap();
+                                scrub(&db, &tx, Id::Node(x.node_id), ty, options, seed);
                             }
                         }
                         _ => {}
@@ -228,11 +182,10 @@ pub fn redact(
 
                 for attr in attrs {
                     let attr = attr.unwrap();
-                    let ty = db.attr_inferred_type(attr.attr_id).unwrap();
 
-                    mask_attr(db, &tx, attr.attr_id, ty, options, seed);
-                    if !rule.attrs.contains(&attr.name) {
-                        scrub_attr(&db, &tx, attr.attr_id, ty, options, seed);
+                    if !rule.allow_attrs.contains(&attr.name) {
+                        let ty = db.attr_inferred_type(attr.attr_id).unwrap();
+                        scrub(&db, &tx, Id::Attr(attr.attr_id), ty, options, seed);
                     }
                 }
             }

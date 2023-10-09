@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
     fmt::Display,
     io::{self, Write},
     str,
@@ -11,16 +10,7 @@ use crate::{
     DocumentDb,
 };
 
-// use indexmap::IndexMap;
-// use qname::QName;
 use unic_ucd::GeneralCategory;
-
-// use crate::{
-//     document::{Declaration, Document},
-//     key::DocKey,
-//     value::{ElementValue, NodeValue},
-//     Node,
-// };
 
 pub trait Print<Config, Context = ()> {
     fn print(&self, f: &mut dyn Write, config: &Config, context: &Context) -> std::io::Result<()>;
