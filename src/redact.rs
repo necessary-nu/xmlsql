@@ -46,7 +46,7 @@ fn scrub_node(
         InferredType::Empty | InferredType::Whitespace => {
             return;
         }
-        InferredType::String => "redacted",
+        InferredType::String => "[redacted]",
         InferredType::Boolean => {
             return;
         }
@@ -93,7 +93,7 @@ fn scrub_attr(
         InferredType::Empty | InferredType::Whitespace => {
             return;
         }
-        InferredType::String => "redacted",
+        InferredType::String => "[redacted]",
         InferredType::Boolean => {
             return;
         }
