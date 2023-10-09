@@ -126,15 +126,17 @@ pub fn redact(
             let child_nodes = db.child_nodes(node.node_id).unwrap();
             for child_node in child_nodes {
                 let child_node = child_node.unwrap();
-                let ty = db.inferred_type(node.node_id).unwrap();
                 match child_node {
                     Node::Text(x) => {
+                        let ty = db.inferred_type(x.node_id).unwrap();
                         scrub(db, &tx, Id::Node(x.node_id), ty, options, seed);
                     }
                     Node::Comment(x) => {
+                        let ty = db.inferred_type(x.node_id).unwrap();
                         scrub(db, &tx, Id::Node(x.node_id), ty, options, seed);
                     }
                     Node::CData(x) => {
+                        let ty = db.inferred_type(x.node_id).unwrap();
                         scrub(db, &tx, Id::Node(x.node_id), ty, options, seed);
                     }
                     _ => {}
