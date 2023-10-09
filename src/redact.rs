@@ -25,11 +25,10 @@ fn scrub_node(
     db: &DocumentDb,
     tx: &Transaction<'_>,
     node_id: usize,
+    ty: InferredType,
     options: &Options,
     seed: Uuid,
 ) {
-    let ty = db.inferred_type(node_id).unwrap();
-
     let value = match ty {
         InferredType::Empty | InferredType::Whitespace => {
             return;
@@ -50,6 +49,21 @@ fn scrub_node(
         }
     };
 
+    tx.execute(
+        "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
+        (value, node_id),
+    )
+    .unwrap();
+}
+
+fn mask_node(
+    db: &DocumentDb,
+    tx: &Transaction<'_>,
+    node_id: usize,
+    ty: InferredType,
+    options: &Options,
+    seed: Uuid,
+) {
     if options.mask.uuids && matches!(ty, InferredType::Uuid) {
         let v = db.node_raw_value(node_id).unwrap().unwrap();
         let uuid = Uuid::new_v5(&seed, v.trim().as_bytes()).to_string();
@@ -59,12 +73,6 @@ fn scrub_node(
             (uuid, node_id),
         )
         .unwrap();
-    } else {
-        tx.execute(
-            "UPDATE nodes SET node_value = ?1 WHERE node_id = ?2",
-            (value, node_id),
-        )
-        .unwrap();
     }
 }
 
@@ -72,11 +80,10 @@ fn scrub_attr(
     db: &DocumentDb,
     tx: &Transaction<'_>,
     attr_id: usize,
+    ty: InferredType,
     options: &Options,
     seed: Uuid,
 ) {
-    let ty = db.attr_inferred_type(attr_id).unwrap();
-
     let value = match ty {
         InferredType::Empty | InferredType::Whitespace => {
             return;
@@ -97,6 +104,21 @@ fn scrub_attr(
         }
     };
 
+    tx.execute(
+        "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
+        (value, attr_id),
+    )
+    .unwrap();
+}
+
+fn mask_attr(
+    db: &DocumentDb,
+    tx: &Transaction<'_>,
+    attr_id: usize,
+    ty: InferredType,
+    options: &Options,
+    seed: Uuid,
+) {
     if options.mask.uuids && matches!(ty, InferredType::Uuid) {
         let v = db.attr_raw_value(attr_id).unwrap().unwrap();
         let uuid = Uuid::new_v5(&seed, v.as_bytes()).to_string();
@@ -104,12 +126,6 @@ fn scrub_attr(
         tx.execute(
             "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
             (uuid, attr_id),
-        )
-        .unwrap();
-    } else {
-        tx.execute(
-            "UPDATE attrs SET attr_value = ?1 WHERE attr_id = ?2",
-            (value, attr_id),
         )
         .unwrap();
     }
@@ -142,21 +158,28 @@ pub fn redact(
             .filter(|x| x.tag == node.name)
             .collect::<Vec<_>>();
 
+        let ty = db.inferred_type(node.node_id).unwrap();
+        mask_node(db, &tx, node.node_id, ty, options, seed);
+
         if matched_rules.is_empty() {
-            scrub_node(&db, &tx, node.node_id, options, seed);
+            scrub_node(&db, &tx, node.node_id, ty, options, seed);
 
             let child_nodes = db.child_nodes(node.node_id).unwrap();
             for child_node in child_nodes {
                 let child_node = child_node.unwrap();
+                let ty = db.inferred_type(node.node_id).unwrap();
                 match child_node {
                     Node::Text(x) => {
-                        scrub_node(&db, &tx, x.node_id, options, seed);
+                        mask_node(db, &tx, x.node_id, ty, options, seed);
+                        scrub_node(&db, &tx, x.node_id, ty, options, seed);
                     }
                     Node::Comment(x) => {
-                        scrub_node(&db, &tx, x.node_id, options, seed);
+                        mask_node(db, &tx, x.node_id, ty, options, seed);
+                        scrub_node(&db, &tx, x.node_id, ty, options, seed);
                     }
                     Node::CData(x) => {
-                        scrub_node(&db, &tx, x.node_id, options, seed);
+                        mask_node(db, &tx, x.node_id, ty, options, seed);
+                        scrub_node(&db, &tx, x.node_id, ty, options, seed);
                     }
                     _ => {}
                 }
@@ -165,24 +188,30 @@ pub fn redact(
             let attrs = db.attrs(node.node_id).unwrap();
             for attr in attrs {
                 let attr = attr.unwrap();
-                scrub_attr(&db, &tx, attr.attr_id, options, seed);
+                let ty = db.attr_inferred_type(attr.attr_id).unwrap();
+                mask_attr(db, &tx, attr.attr_id, ty, options, seed);
+                scrub_attr(&db, &tx, attr.attr_id, ty, options, seed);
             }
         } else {
             for rule in matched_rules {
                 if !rule.value {
-                    scrub_node(&db, &tx, node.node_id, options, seed);
+                    scrub_node(&db, &tx, node.node_id, ty, options, seed);
                     let child_nodes = db.child_nodes(node.node_id).unwrap();
                     for child_node in child_nodes {
                         let child_node = child_node.unwrap();
+                        let ty = db.inferred_type(child_node.node_id()).unwrap();
                         match child_node {
                             Node::Text(x) => {
-                                scrub_node(&db, &tx, x.node_id, options, seed);
+                                mask_node(db, &tx, x.node_id, ty, options, seed);
+                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
                             }
                             Node::Comment(x) => {
-                                scrub_node(&db, &tx, x.node_id, options, seed);
+                                mask_node(db, &tx, x.node_id, ty, options, seed);
+                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
                             }
                             Node::CData(x) => {
-                                scrub_node(&db, &tx, x.node_id, options, seed);
+                                mask_node(db, &tx, x.node_id, ty, options, seed);
+                                scrub_node(&db, &tx, x.node_id, ty, options, seed);
                             }
                             _ => {}
                         }
@@ -193,8 +222,10 @@ pub fn redact(
 
                 for attr in attrs {
                     let attr = attr.unwrap();
+                    let ty = db.attr_inferred_type(attr.attr_id).unwrap();
                     if !rule.attrs.contains(&attr.name) {
-                        scrub_attr(&db, &tx, attr.attr_id, options, seed);
+                        mask_attr(db, &tx, attr.attr_id, ty, options, seed);
+                        scrub_attr(&db, &tx, attr.attr_id, ty, options, seed);
                     }
                 }
             }
