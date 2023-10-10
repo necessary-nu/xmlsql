@@ -51,6 +51,10 @@ CREATE TABLE attrs (
 
 CREATE INDEX idx_nodes_parent_node_id ON nodes(parent_node_id);
 CREATE INDEX idx_attrs_parent_node_id ON attrs(parent_node_id);
+CREATE INDEX idx_nodes_name ON nodes(node_name);
+CREATE INDEX idx_nodes_type_elements ON nodes(node_type) WHERE node_type = 1;
+CREATE INDEX idx_nodes_descendents ON nodes(node_type, parent_node_id);
+CREATE INDEX idx_attrs_name ON attrs(attr_name);
 
 INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position)
 VALUES
@@ -90,6 +94,10 @@ CREATE TABLE attrs (
 
 CREATE INDEX idx_nodes_parent_node_id ON nodes(parent_node_id);
 CREATE INDEX idx_attrs_parent_node_id ON attrs(parent_node_id);
+CREATE INDEX idx_nodes_name ON nodes(node_name);
+CREATE INDEX idx_nodes_type_elements ON nodes(node_type) WHERE node_type = 1;
+CREATE INDEX idx_nodes_descendents ON nodes(node_type, parent_node_id);
+CREATE INDEX idx_attrs_name ON attrs(attr_name);
 
 INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position, inferred_type)
 VALUES
@@ -458,8 +466,7 @@ impl DocumentDb {
     ) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
         let stmt = self.conn.prepare_cached(
             r#"
-            WITH RECURSIVE
-            descendents(parent_id) AS (
+            WITH RECURSIVE descendents(parent_id) AS (
                 VALUES(?1)
                 UNION
                 SELECT node_id FROM nodes, descendents
@@ -490,8 +497,7 @@ impl DocumentDb {
     ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
         let stmt = self.conn.prepare_cached(
             r#"
-            WITH RECURSIVE
-            descendents(parent_id) AS (
+            WITH RECURSIVE descendents(parent_id) AS (
                 VALUES(?1)
                 UNION
                 SELECT node_id FROM nodes, descendents
