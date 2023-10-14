@@ -21,10 +21,19 @@ pub struct DocumentDb {
     _mode: Mode,
 }
 
+const PRAGMAS: &str = r#"
+PRAGMA journal_mode = OFF;
+PRAGMA synchronous = 0;
+PRAGMA cache_size = 1000000;
+PRAGMA locking_mode = EXCLUSIVE;
+PRAGMA temp_store = MEMORY;
+PRAGMA page_size = 65536;
+"#;
+
 const SQL_SIMPLE: &str = r#"
 CREATE TABLE nodes (
     node_id INTEGER PRIMARY KEY,
-    parent_node_id BIGINT NOT NULL,
+    parent_node_id INTEGER NOT NULL,
     node_order INTEGER NOT NULL,
 
     node_type INTEGER NOT NULL,
@@ -32,7 +41,7 @@ CREATE TABLE nodes (
     node_name TEXT,
     node_value TEXT,
 
-    buffer_position BIGINT NOT NULL,
+    buffer_position INTEGER NOT NULL,
     FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id)
 );
 
@@ -43,18 +52,11 @@ CREATE TABLE attrs (
     attr_name TEXT NOT NULL,
     attr_value TEXT NOT NULL,
 
-    parent_node_id BIGINT NOT NULL,
-    buffer_position BIGINT NOT NULL,
+    parent_node_id INTEGER NOT NULL,
+    buffer_position INTEGER NOT NULL,
 
     FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
 );
-
-CREATE INDEX idx_nodes_parent_node_id ON nodes(parent_node_id);
-CREATE INDEX idx_attrs_parent_node_id ON attrs(parent_node_id);
-CREATE INDEX idx_nodes_name ON nodes(node_name);
-CREATE INDEX idx_nodes_type_elements ON nodes(node_type) WHERE node_type = 1;
-CREATE INDEX idx_nodes_descendents ON nodes(node_type, parent_node_id);
-CREATE INDEX idx_attrs_name ON attrs(attr_name);
 
 INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position)
 VALUES
@@ -65,7 +67,7 @@ VALUES
 const SQL_WITH_TYPES: &str = r#"
 CREATE TABLE nodes (
     node_id INTEGER PRIMARY KEY,
-    parent_node_id BIGINT NOT NULL,
+    parent_node_id INTEGER NOT NULL,
     node_order INTEGER NOT NULL,
 
     node_type INTEGER NOT NULL,
@@ -73,7 +75,7 @@ CREATE TABLE nodes (
     node_name TEXT,
     node_value TEXT,
 
-    buffer_position BIGINT NOT NULL,
+    buffer_position INTEGER NOT NULL,
     inferred_type TEXT NOT NULL,
     FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id)
 );
@@ -85,19 +87,12 @@ CREATE TABLE attrs (
     attr_name TEXT NOT NULL,
     attr_value TEXT NOT NULL,
 
-    parent_node_id BIGINT NOT NULL,
-    buffer_position BIGINT NOT NULL,
+    parent_node_id INTEGER NOT NULL,
+    buffer_position INTEGER NOT NULL,
     inferred_type TEXT NOT NULL,
 
     FOREIGN KEY(parent_node_id) REFERENCES nodes(node_id)
 );
-
-CREATE INDEX idx_nodes_parent_node_id ON nodes(parent_node_id);
-CREATE INDEX idx_attrs_parent_node_id ON attrs(parent_node_id);
-CREATE INDEX idx_nodes_name ON nodes(node_name);
-CREATE INDEX idx_nodes_type_elements ON nodes(node_type) WHERE node_type = 1;
-CREATE INDEX idx_nodes_descendents ON nodes(node_type, parent_node_id);
-CREATE INDEX idx_attrs_name ON attrs(attr_name);
 
 INSERT INTO nodes (node_id, parent_node_id, node_order, node_type, node_ns, node_name, node_value, buffer_position, inferred_type)
 VALUES
@@ -127,6 +122,8 @@ impl DocumentDb {
     }
 
     fn _create(conn: rusqlite::Connection, mode: Mode, uses_type_inference: bool) -> Result<Self> {
+        conn.execute_batch(PRAGMAS)?;
+
         let mut batch = Batch::new(
             &conn,
             if uses_type_inference {
@@ -565,6 +562,23 @@ impl DocumentDb {
         )?;
         let result = statement.query_row([attr_id], |r| r.get::<_, String>(0))?;
         Ok(result.parse().unwrap())
+    }
+
+    pub fn elements_matching_attr_value(&self, attr_name: &str, attr_value: &str) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+        let statement = self.conn.prepare(
+            r#"
+                SELECT n.node_id, n.node_ns, n.node_name, n.node_value FROM attrs a 
+                JOIN nodes n ON n.node_id = a.parent_node_id
+                WHERE a.attr_name = ?1 AND a.attr_value = ?2 AND n.node_type = 1
+            "#,
+        )?;
+        statement.query_map([attr_name, attr_value], |r| {
+            Ok(model::Element {
+                node_id: r.get::<_, usize>(0)?,
+                ns: r.get::<_, Option<String>>(1)?,
+                name: r.get::<_, String>(2)?,
+            })
+        })
     }
 
     #[inline]

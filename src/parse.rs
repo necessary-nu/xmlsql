@@ -1,79 +1,54 @@
 use std::io::BufRead;
 
-use quick_xml::{
-    events::{BytesStart, Event},
-    Reader,
-};
+use xmlparser::{self, ElementEnd, Token};
+
+// use quick_xml::{
+//     events::{BytesStart, Event},
+//     Reader,
+// };
 
 use crate::{
-    builder::DocumentDbBuilder,
+    builder::{DocumentDbBuilder, InsertAttr, InsertNode, InsertRootElement},
     document::{DocumentDb, NodeType},
 };
 
-fn parse_start_event<R>(
-    reader: &quick_xml::Reader<R>,
+fn parse_start_event(
+    local_name: &str,
+    prefix: Option<&str>,
+    position: usize,
     parser_state: &mut ParserState,
-    db: &DocumentDbBuilder,
-    event: &BytesStart<'_>,
+    tx: &mut crossbeam_channel::Sender<Message>,
+    node_id_count: &mut usize,
 ) -> Result<(), Error> {
-    let (local_name, prefix) = event.name().decompose();
-    let local_name = std::str::from_utf8(local_name.as_ref())?;
-    let prefix = match prefix.as_ref() {
-        Some(x) => Some(std::str::from_utf8(x.as_ref())?),
-        None => None,
-    };
-
     let parent_node_id = parser_state.parent_node_id();
 
-    let node_id = if matches!(parser_state.current(), ParserStateValue::Document) {
-        db.insert_root_element(
-            prefix,
-            Some(local_name),
-            reader.buffer_position(),
+    if matches!(parser_state.current(), ParserStateValue::Document) {
+        tx.send(Message::InsertRootElement(InsertRootElement::new(
+            prefix.map(|x| x.to_owned()),
+            Some(local_name.to_string()),
+            position,
             parser_state.current_order(),
-        )?;
+        )))?;
         parser_state.increment_order();
         parser_state.push(ParserStateValue::Root);
-        1
     } else {
-        let node_id = db.insert_node(
+        let node_id = *node_id_count;
+        let node = InsertNode::new(
+            node_id,
             parent_node_id,
             NodeType::Element,
-            prefix,
-            Some(local_name),
+            prefix.map(|x| x.to_string()),
+            Some(local_name.to_string()),
             None,
-            reader.buffer_position(),
+            position,
             parser_state.current_order(),
-        )?;
+        );
+        tx.send(Message::InsertNode(node))?;
+
+        *node_id_count += 1;
+
         parser_state.increment_order();
         parser_state.push(ParserStateValue::Element(node_id));
-        node_id
-    };
-
-    for (n, x) in event.attributes().enumerate() {
-        match x {
-            Ok(x) => {
-                let attr_ns = x.key.prefix();
-                let attr_ns = match attr_ns.as_ref() {
-                    Some(x) => Some(std::str::from_utf8(x.as_ref())?),
-                    None => None,
-                };
-
-                let attr_name = x.key.local_name();
-                let attr_name = std::str::from_utf8(attr_name.as_ref())?;
-                let attr_value = &*x.decode_and_unescape_value(reader)?;
-
-                db.insert_attr(
-                    node_id,
-                    attr_ns,
-                    attr_name,
-                    attr_value,
-                    reader.buffer_position(),
-                    n,
-                )?;
-            }
-            Err(e) => return Err(quick_xml::Error::InvalidAttr(e).into()),
-        }
     }
 
     Ok(())
@@ -94,6 +69,7 @@ pub struct ParserState {
 }
 
 impl ParserState {
+    #[inline(always)]
     pub fn current(&self) -> ParserStateValue {
         match self.stack.last() {
             Some(x) => *x,
@@ -101,6 +77,7 @@ impl ParserState {
         }
     }
 
+    #[inline(always)]
     pub fn current_order(&self) -> usize {
         match self.order.last() {
             Some(v) => *v,
@@ -108,6 +85,7 @@ impl ParserState {
         }
     }
 
+    #[inline(always)]
     pub fn increment_order(&mut self) {
         match self.order.last_mut() {
             Some(x) => *x += 1,
@@ -115,6 +93,7 @@ impl ParserState {
         }
     }
 
+    #[inline(always)]
     pub fn parent_node_id(&self) -> usize {
         match self.current() {
             ParserStateValue::Document => 0,
@@ -123,11 +102,13 @@ impl ParserState {
         }
     }
 
+    #[inline(always)]
     pub fn push(&mut self, value: ParserStateValue) {
         self.stack.push(value);
         self.order.push(0);
     }
 
+    #[inline(always)]
     pub fn pop(&mut self) {
         self.stack.pop();
         self.order.pop();
@@ -137,13 +118,16 @@ impl ParserState {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{0}")]
-    Xml(#[from] quick_xml::Error),
+    Xml(#[from] xmlparser::Error),
 
     #[error("{0}")]
     Db(#[from] rusqlite::Error),
 
     #[error("{0}")]
     Utf8(#[from] std::str::Utf8Error),
+
+    #[error("{0}")]
+    Channel(#[from] crossbeam_channel::SendError<Message>),
 }
 
 #[derive(Debug, Default)]
@@ -152,116 +136,260 @@ pub struct ParseOptions {
     pub infer_types: bool,
 }
 
-pub(crate) fn parse<R: BufRead>(
-    mut doc_db: DocumentDb,
-    input: R,
+pub enum Message {
+    InsertNode(InsertNode),
+    InsertAttr(InsertAttr),
+    InsertRootElement(InsertRootElement),
+}
+
+pub(crate) fn parse(
+    doc_db: DocumentDb,
+    input: &str,
     options: ParseOptions,
 ) -> Result<DocumentDb, Error> {
-    let mut reader = Reader::from_reader(input);
-    reader.trim_text(options.ignore_whitespace);
+    // let mut reader = Reader::from_reader(std::io::Cursor::new(input));
+    // reader.trim_text(options.ignore_whitespace);
+
+    let (mut tx, rx) = crossbeam_channel::bounded(10000000);
+
+    let handle = std::thread::spawn(move || {
+        let rx = rx;
+
+        let mut doc_db = doc_db;
+        let db = DocumentDbBuilder::new(doc_db.conn.transaction().unwrap(), options.infer_types);
+
+        loop {
+            let msg = match rx.recv() {
+                Ok(msg) => msg,
+                Err(_) => {
+                    break;
+                }
+            };
+
+            match msg {
+                Message::InsertNode(msg) => {
+                    db.insert_node(msg).map_err(|e| {
+                        eprintln!("{e:?}");
+                        e
+                    })?;
+                }
+                Message::InsertAttr(msg) => {
+                    db.insert_attr(msg).map_err(|e| {
+                        eprintln!("{e:?}");
+                        e
+                    })?;
+                }
+                Message::InsertRootElement(msg) => {
+                    db.insert_root_element(msg).map_err(|e| {
+                        eprintln!("{e:?}");
+                        e
+                    })?;
+                }
+            }
+        }
+
+        db.add_indexes().unwrap();
+        db.commit().unwrap();
+
+        Ok::<_, Error>(doc_db)
+    });
 
     let mut parser_state = ParserState::default();
+    let mut node_id_count = 2usize;
 
-    let db = DocumentDbBuilder {
-        conn: doc_db.conn.transaction()?,
-        infer_types: options.infer_types,
-    };
-
-    let mut buf = Vec::new();
-    loop {
-        let event = reader.read_event_into(&mut buf)?;
+    // let mut buf = Vec::new();
+    for token in xmlparser::Tokenizer::from(input) {
+        let token = token?;
         let parent_node_id = parser_state.parent_node_id();
 
-        match event {
-            Event::Start(event) => {
-                parse_start_event(&reader, &mut parser_state, &db, &event)?;
-            }
-            Event::End(_) => {
-                parser_state.pop();
-            }
-            Event::Empty(event) => {
-                parse_start_event(&reader, &mut parser_state, &db, &event)?;
-                parser_state.pop();
-            }
-            Event::Text(event) => {
-                db.insert_node(
-                    parent_node_id,
-                    NodeType::Text,
-                    None,
-                    None,
-                    Some(event.unescape()?.as_ref()),
-                    reader.buffer_position(),
-                    parser_state.current_order(),
-                )?;
-                parser_state.increment_order();
-            }
-            Event::CData(event) => {
-                db.insert_node(
-                    parent_node_id,
-                    NodeType::CData,
-                    None,
-                    None,
-                    Some(std::str::from_utf8(event.as_ref())?),
-                    reader.buffer_position(),
-                    parser_state.current_order(),
-                )?;
-                parser_state.increment_order();
-            }
-            Event::Comment(event) => {
-                db.insert_node(
-                    parent_node_id,
-                    NodeType::Comment,
-                    None,
-                    None,
-                    Some(event.unescape()?.as_ref()),
-                    reader.buffer_position(),
-                    parser_state.current_order(),
-                )?;
-                parser_state.increment_order();
-            }
-            Event::Decl(event) => {
-                db.insert_node(
+        // println!("{:?}", token);
+
+        match token {
+            Token::Declaration {
+                version,
+                encoding,
+                standalone,
+                span,
+            } => {
+                tx.send(Message::InsertNode(InsertNode::new(
+                    node_id_count,
                     parent_node_id,
                     NodeType::Declaration,
                     None,
                     None,
-                    Some(std::str::from_utf8(event.as_ref())?),
-                    reader.buffer_position(),
+                    None, // TODO: merge them together
+                    token.span().start(),
                     parser_state.current_order(),
-                )?;
+                )))?;
+                node_id_count += 1;
                 parser_state.increment_order();
             }
-            Event::PI(event) => {
-                db.insert_node(
+            Token::ProcessingInstruction {
+                target,
+                content,
+                span,
+            } => {
+                tx.send(Message::InsertNode(InsertNode::new(
+                    node_id_count,
                     parent_node_id,
                     NodeType::ProcessingInstruction,
                     None,
                     None,
-                    Some(std::str::from_utf8(event.as_ref())?),
-                    reader.buffer_position(),
+                    None, // TODO: merge them together
+                    token.span().start(),
                     parser_state.current_order(),
-                )?;
+                )))?;
+                node_id_count += 1;
                 parser_state.increment_order();
             }
-            Event::DocType(event) => {
-                db.insert_node(
+            Token::Comment { text, span } => {
+                tx.send(Message::InsertNode(InsertNode::new(
+                    node_id_count,
+                    parent_node_id,
+                    NodeType::Comment,
+                    None,
+                    None,
+                    Some(if options.ignore_whitespace {
+                        (&*text).trim().to_string()
+                    } else {
+                        text.to_string()
+                    }),
+                    token.span().start(),
+                    parser_state.current_order(),
+                )))?;
+                node_id_count += 1;
+                parser_state.increment_order();
+            }
+            Token::DtdStart {
+                name,
+                external_id,
+                span,
+            } => {
+                tx.send(Message::InsertNode(InsertNode::new(
+                    node_id_count,
                     parent_node_id,
                     NodeType::Doctype,
                     None,
                     None,
-                    Some(std::str::from_utf8(event.as_ref())?),
-                    reader.buffer_position(),
+                    None, // TODO: merge them together
+                    token.span().start(),
                     parser_state.current_order(),
-                )?;
+                )))?;
+                node_id_count += 1;
                 parser_state.increment_order();
             }
-            Event::Eof => break,
-        }
+            Token::EmptyDtd {
+                name,
+                external_id,
+                span,
+            } => {}
+            Token::EntityDeclaration {
+                name,
+                definition,
+                span,
+            } => {}
+            Token::DtdEnd { span } => {}
+            Token::ElementStart {
+                prefix,
+                local,
+                span,
+            } => {
+                let prefix = if !prefix.is_empty() {
+                    Some(&*prefix)
+                } else {
+                    None
+                };
+                parse_start_event(
+                    &local,
+                    prefix,
+                    span.start(),
+                    &mut parser_state,
+                    &mut tx,
+                    &mut node_id_count,
+                )?;
+            }
+            Token::Attribute {
+                prefix,
+                local,
+                value,
+                span,
+            } => {
+                let prefix = if !prefix.is_empty() {
+                    Some(&*prefix)
+                } else {
+                    None
+                };
 
-        buf.clear();
+                let local = if !local.is_empty() {
+                    Some(&*local)
+                } else {
+                    None
+                };
+
+                let value = if !value.is_empty() {
+                    Some(&*value)
+                } else {
+                    None
+                };
+
+                tx.send(Message::InsertAttr(InsertAttr::new(
+                    parent_node_id,
+                    prefix.map(|x| x.to_string()),
+                    local.map(|x| x.to_string()).unwrap_or_default(),
+                    value.map(|x| x.to_string()).unwrap_or_default(),
+                    span.start(),
+                    parser_state.current_order(),
+                )))?;
+                parser_state.increment_order();
+            }
+            Token::ElementEnd { end, span } => match end {
+                ElementEnd::Open => continue,
+                ElementEnd::Close(_, _) | ElementEnd::Empty => {
+                    parser_state.pop();
+                }
+            },
+            Token::Text { text } => {
+                tx.send(Message::InsertNode(InsertNode::new(
+                    node_id_count,
+                    parent_node_id,
+                    NodeType::Text,
+                    None,
+                    None,
+                    Some(if options.ignore_whitespace {
+                        (&*text).trim().to_string()
+                    } else {
+                        text.to_string()
+                    }),
+                    token.span().start(),
+                    parser_state.current_order(),
+                )))?;
+                node_id_count += 1;
+                parser_state.increment_order();
+            }
+            Token::Cdata { text, span } => {
+                tx.send(Message::InsertNode(InsertNode::new(
+                    node_id_count,
+                    parent_node_id,
+                    NodeType::CData,
+                    None,
+                    None,
+                    Some(if options.ignore_whitespace {
+                        (&*text).trim().to_string()
+                    } else {
+                        text.to_string()
+                    }),
+                    token.span().start(),
+                    parser_state.current_order(),
+                )))?;
+                node_id_count += 1;
+                parser_state.increment_order();
+            }
+        }
     }
 
-    db.commit()?;
+    drop(tx);
+
+    let doc_db = handle.join().unwrap()?;
 
     Ok(doc_db)
 }

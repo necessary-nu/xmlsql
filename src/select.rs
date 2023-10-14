@@ -2,6 +2,7 @@ use std::borrow::{Borrow, Cow};
 
 use cssparser::{ParseError, ToCss};
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
+use selectors::bloom::CountingBloomFilter;
 use selectors::context::QuirksMode;
 use selectors::parser::{
     NonTSPseudoClass, Parser, Selector as GenericSelector, SelectorImpl, SelectorList,
@@ -310,14 +311,23 @@ impl Selector {
         db: &DocumentDb,
         node_id: usize,
     ) -> Result<Option<model::Element>, rusqlite::Error> {
+        let bloom_filter = CountingBloomFilter::new();
         let mut context = matching::MatchingContext::new(
             matching::MatchingMode::Normal,
-            None,
+            Some(&bloom_filter),
             None,
             QuirksMode::NoQuirks,
         );
 
         let mut matched = None;
+
+        // println!(
+        //     "{:?}",
+        //     self.0
+        //         .iter()
+        //         .map(|x| x.0.iter().collect::<Vec<_>>())
+        //         .collect::<Vec<_>>()
+        // );
 
         for element in db.descendents(node_id)? {
             let element = element?;
@@ -350,12 +360,21 @@ impl Selector {
         db: &DocumentDb,
         node_id: usize,
     ) -> Result<Vec<model::Element>, rusqlite::Error> {
+        let bloom_filter = CountingBloomFilter::new();
         let mut context = matching::MatchingContext::new(
             matching::MatchingMode::Normal,
-            None,
+            Some(&bloom_filter),
             None,
             QuirksMode::NoQuirks,
         );
+
+        // println!(
+        //     "{:?}",
+        //     self.0
+        //         .iter()
+        //         .map(|x| x.0.iter_raw_match_order().collect::<Vec<_>>())
+        //         .collect::<Vec<_>>()
+        // );
 
         db.descendents(node_id)?
             .filter_map(|element| {
@@ -370,6 +389,7 @@ impl Selector {
                 };
 
                 let x = self.0.iter().any(|s| {
+                    // println!("{s:?}");
                     matching::matches_selector(&s.0, 0, None, &r, &mut context, &mut |_, _| {})
                 });
 
