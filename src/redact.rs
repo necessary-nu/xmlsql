@@ -108,8 +108,6 @@ pub fn redact(
             eprintln!("Parsed {i} elements...");
         }
 
-        let node = node.unwrap();
-
         let matched_rules = options
             .ignore
             .iter()
@@ -123,7 +121,6 @@ pub fn redact(
 
             let child_nodes = db.child_nodes(node.node_id).unwrap();
             for child_node in child_nodes {
-                let child_node = child_node.unwrap();
                 match child_node {
                     Node::Text(x) => {
                         let ty = db.inferred_type(x.node_id).unwrap();
@@ -143,7 +140,6 @@ pub fn redact(
 
             let attrs = db.attrs(node.node_id).unwrap();
             for attr in attrs {
-                let attr = attr.unwrap();
                 let ty = db.attr_inferred_type(attr.attr_id).unwrap();
                 scrub(db, &tx, Id::Attr(attr.attr_id), ty, options, seed);
             }
@@ -154,7 +150,6 @@ pub fn redact(
                     scrub(&db, &tx, Id::Node(node.node_id), ty, options, seed);
                 }
                 for child_node in child_nodes {
-                    let child_node = child_node.unwrap();
                     match child_node {
                         Node::Text(x) => {
                             if !rule.allow_value {
@@ -181,8 +176,6 @@ pub fn redact(
                 let attrs = db.attrs(node.node_id).unwrap();
 
                 for attr in attrs {
-                    let attr = attr.unwrap();
-
                     if !rule.allow_attrs.contains(&attr.name) {
                         let ty = db.attr_inferred_type(attr.attr_id).unwrap();
                         scrub(&db, &tx, Id::Attr(attr.attr_id), ty, options, seed);

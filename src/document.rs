@@ -288,7 +288,7 @@ impl DocumentDb {
     pub fn child_nodes(
         &self,
         parent_node_id: usize,
-    ) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
+    ) -> Result<Vec<model::Node>> {
         let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_type, node_ns, node_name, node_value FROM nodes
@@ -307,13 +307,13 @@ impl DocumentDb {
                 value: r.get::<_, Option<String>>(4)?,
             }
             .into())
-        })
+        })?.collect()
     }
 
     pub fn children(
         &self,
         parent_node_id: usize,
-    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+    ) -> Result<Vec<model::Element>> {
         let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_ns, node_name FROM nodes
@@ -328,14 +328,14 @@ impl DocumentDb {
                 ns: r.get::<_, Option<String>>(1)?,
                 name: r.get::<_, String>(2)?,
             })
-        })
+        })?.collect()
     }
 
     pub fn children_by_name(
         &self,
         parent_node_id: usize,
         element_name: &str,
-    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+    ) -> Result<Vec<model::Element>> {
         let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_ns, node_name FROM nodes
@@ -355,7 +355,7 @@ impl DocumentDb {
                     name: r.get::<_, String>(2)?,
                 })
             },
-        )
+        )?.collect()
     }
 
     pub fn attr(&self, attr_id: usize) -> Result<model::Attr> {
@@ -420,7 +420,7 @@ impl DocumentDb {
         }
     }
 
-    pub fn attrs(&self, node_id: usize) -> Result<impl Iterator<Item = Result<model::Attr>> + '_> {
+    pub fn attrs(&self, node_id: usize) -> Result<Vec<model::Attr>> {
         let statement = self.conn.prepare(
             r#"
                 SELECT attr_id, attr_ns, attr_name, attr_value FROM attrs WHERE parent_node_id = ?1
@@ -434,7 +434,7 @@ impl DocumentDb {
                 name: r.get::<_, String>(2)?,
                 value: r.get::<_, String>(3)?,
             })
-        })
+        })?.collect()
     }
 
     pub fn has_children(&self, node_id: usize) -> Result<bool> {
@@ -449,7 +449,7 @@ impl DocumentDb {
         Ok(count > 0)
     }
 
-    pub fn document_child_nodes(&self) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
+    pub fn document_child_nodes(&self) -> Result<Vec<model::Node>> {
         self.child_nodes(0)
     }
 
@@ -460,7 +460,7 @@ impl DocumentDb {
     pub fn descendent_nodes(
         &self,
         parent_node_id: usize,
-    ) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
+    ) -> Result<Vec<model::Node>> {
         let stmt = self.conn.prepare_cached(
             r#"
             WITH RECURSIVE descendents(parent_id) AS (
@@ -474,7 +474,7 @@ impl DocumentDb {
         "#,
         )?;
 
-        let rows = stmt.query_map([parent_node_id], |r: &Row<'_>| {
+        stmt.query_map([parent_node_id], |r: &Row<'_>| {
             Ok(model::RawNode {
                 node_id: r.get::<_, usize>(0)?,
                 node_type: NodeType::try_from(r.get::<_, u8>(1)?).unwrap(),
@@ -483,15 +483,13 @@ impl DocumentDb {
                 value: r.get::<_, Option<String>>(4)?,
             }
             .into())
-        })?;
-
-        Ok(rows)
+        })?.collect()
     }
 
     pub fn descendents(
         &self,
         parent_node_id: usize,
-    ) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+    ) -> Result<Vec<model::Element>> {
         let stmt = self.conn.prepare_cached(
             r#"
             WITH RECURSIVE descendents(parent_id) AS (
@@ -505,22 +503,20 @@ impl DocumentDb {
         "#,
         )?;
 
-        let rows = stmt.query_map([parent_node_id], |r: &Row<'_>| {
+        stmt.query_map([parent_node_id], |r: &Row<'_>| {
             Ok(model::Element {
                 node_id: r.get(0)?,
                 ns: r.get(1)?,
                 name: r.get(2)?,
             })
-        })?;
-
-        Ok(rows)
+        })?.collect()
     }
 
-    pub fn all_elements(&self) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+    pub fn all_elements(&self) -> Result<Vec<model::Element>> {
         self.descendents(0)
     }
 
-    pub fn all_nodes(&self) -> Result<impl Iterator<Item = Result<model::Node>> + '_> {
+    pub fn all_nodes(&self) -> Result<Vec<model::Node>> {
         self.descendent_nodes(0)
     }
 
@@ -564,7 +560,7 @@ impl DocumentDb {
         Ok(result.parse().unwrap())
     }
 
-    pub fn elements_matching_attr_value(&self, attr_name: &str, attr_value: &str) -> Result<impl Iterator<Item = Result<model::Element>> + '_> {
+    pub fn elements_matching_attr_value(&self, attr_name: &str, attr_value: &str) -> Result<Vec<model::Element>> {
         let statement = self.conn.prepare(
             r#"
                 SELECT n.node_id, n.node_ns, n.node_name, n.node_value FROM attrs a 
@@ -572,13 +568,14 @@ impl DocumentDb {
                 WHERE a.attr_name = ?1 AND a.attr_value = ?2 AND n.node_type = 1
             "#,
         )?;
+
         statement.query_map([attr_name, attr_value], |r| {
             Ok(model::Element {
                 node_id: r.get::<_, usize>(0)?,
                 ns: r.get::<_, Option<String>>(1)?,
                 name: r.get::<_, String>(2)?,
             })
-        })
+        })?.collect()
     }
 
     #[inline]

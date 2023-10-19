@@ -14,9 +14,9 @@ pub use infer::{Inferred, InferredType};
 pub use parse::{Error, ParseOptions};
 pub use select::Selector;
 
-pub fn parse_path_to_disk<P: AsRef<Path>>(
+pub fn parse_path_to_disk<P: AsRef<Path>, Q: AsRef<Path>>(
     db_path: P,
-    path: &Path,
+    path: Q,
     options: ParseOptions,
 ) -> Result<DocumentDb, Error> {
     let f = unsafe { memmap2::Mmap::map(&std::fs::File::open(path).unwrap()).unwrap() };
@@ -26,7 +26,7 @@ pub fn parse_path_to_disk<P: AsRef<Path>>(
 }
 
 pub fn parse_path_in_memory<P: AsRef<Path>>(
-    path: &Path,
+    path: P,
     options: ParseOptions,
 ) -> Result<DocumentDb, Error> {
     let f = unsafe { memmap2::Mmap::map(&std::fs::File::open(path).unwrap()).unwrap() };
@@ -35,7 +35,7 @@ pub fn parse_path_in_memory<P: AsRef<Path>>(
     parse_in_memory(s, options)
 }
 
-pub fn parse_path_to_temp_file(path: &Path, options: ParseOptions) -> Result<DocumentDb, Error> {
+pub fn parse_path_to_temp_file<P: AsRef<Path>>(path: P, options: ParseOptions) -> Result<DocumentDb, Error> {
     let f = unsafe { memmap2::Mmap::map(&std::fs::File::open(path).unwrap()).unwrap() };
     f.advise(memmap2::Advice::Sequential).unwrap();
     let s = unsafe { std::str::from_utf8_unchecked(&f) };

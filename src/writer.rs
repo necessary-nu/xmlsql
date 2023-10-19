@@ -146,7 +146,6 @@ impl Print<Config, State<'_>> for DocumentDb {
         //     Print::print(decl, f, config, context)?;
         // }
         for node in self.child_nodes(0).unwrap() {
-            let node = node.unwrap();
             node.print(f, config, &context.with_node_id(node.node_id()))?;
         }
 
@@ -226,17 +225,13 @@ impl Print<Config, State<'_>> for Element {
         let nodes = context
             .doc
             .child_nodes(self.node_id)
-            .unwrap()
-            .flat_map(Result::ok)
-            .collect::<Vec<_>>();
+            .unwrap();
 
         if nodes.is_empty() {
             let attrs = context
                 .doc
                 .attrs(self.node_id)
-                .unwrap()
-                .flat_map(Result::ok)
-                .collect::<Vec<_>>();
+                .unwrap();
             if !attrs.is_empty() {
                 write!(f, "{:>indent$}<{}", "", self.name, indent = context.indent)?;
                 let line_length = &self.name.len()
@@ -285,9 +280,7 @@ impl Print<Config, State<'_>> for Element {
         let attrs = context
             .doc
             .attrs(self.node_id)
-            .unwrap()
-            .flat_map(Result::ok)
-            .collect::<Vec<_>>();
+            .unwrap();
         if !attrs.is_empty() {
             write!(f, "{:>indent$}<{}", "", self.name, indent = context.indent)?;
             let line_length = &self.name.len()

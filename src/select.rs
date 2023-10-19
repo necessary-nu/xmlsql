@@ -330,8 +330,6 @@ impl Selector {
         // );
 
         for element in db.descendents(node_id)? {
-            let element = element?;
-
             let r = ElementRef {
                 db,
                 element: Cow::Borrowed(&element),
@@ -377,12 +375,8 @@ impl Selector {
         // );
 
         db.descendents(node_id)?
+            .into_iter()
             .filter_map(|element| {
-                let element = match element {
-                    Ok(element) => element,
-                    Err(e) => return Some(Err(e)),
-                };
-
                 let r = ElementRef {
                     db,
                     element: Cow::Borrowed(&element),
