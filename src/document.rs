@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+};
 
 use rusqlite::{types::ToSqlOutput, Batch, OpenFlags, OptionalExtension, Result, Row};
 
@@ -6,6 +9,7 @@ use crate::{
     infer::InferredType,
     model,
     writer::{Config, Print, State},
+    ParseOptions,
 };
 
 #[derive(Debug)]
@@ -18,6 +22,7 @@ enum Mode {
 #[derive(Debug)]
 pub struct DocumentDb {
     pub(crate) conn: rusqlite::Connection,
+    pub(crate) options: ParseOptions,
     _mode: Mode,
 }
 
@@ -101,32 +106,32 @@ VALUES
 "#;
 
 impl DocumentDb {
-    pub(crate) fn create_in_memory(uses_type_inference: bool) -> Result<Self> {
+    pub(crate) fn create_in_memory(options: ParseOptions) -> Result<Self> {
         let conn = rusqlite::Connection::open_in_memory()?;
-        Self::_create(conn, Mode::InMemory, uses_type_inference)
+        Self::_create(conn, Mode::InMemory, options)
     }
 
-    pub(crate) fn create_temp(uses_type_inference: bool) -> Result<Self> {
+    pub(crate) fn create_temp(options: ParseOptions) -> Result<Self> {
         let tmp = tempfile::tempdir()
             .map_err(|_| rusqlite::Error::InvalidPath(PathBuf::from(":temp:")))?;
         let conn = rusqlite::Connection::open(tmp.path().join("db"))?;
-        Self::_create(conn, Mode::TempDir(tmp), uses_type_inference)
+        Self::_create(conn, Mode::TempDir(tmp), options)
     }
 
-    pub(crate) fn create<P: AsRef<Path>>(path: P, uses_type_inference: bool) -> Result<Self> {
+    pub(crate) fn create<P: AsRef<Path>>(path: P, options: ParseOptions) -> Result<Self> {
         let conn = rusqlite::Connection::open_with_flags(
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )?;
-        Self::_create(conn, Mode::OnDisk, uses_type_inference)
+        Self::_create(conn, Mode::OnDisk, options)
     }
 
-    fn _create(conn: rusqlite::Connection, mode: Mode, uses_type_inference: bool) -> Result<Self> {
+    fn _create(conn: rusqlite::Connection, mode: Mode, options: ParseOptions) -> Result<Self> {
         conn.execute_batch(PRAGMAS)?;
 
         let mut batch = Batch::new(
             &conn,
-            if uses_type_inference {
+            if options.infer_types {
                 SQL_WITH_TYPES
             } else {
                 SQL_SIMPLE
@@ -137,16 +142,21 @@ impl DocumentDb {
             stmt.execute([])?;
         }
 
-        Ok(Self { conn, _mode: mode })
+        Ok(Self {
+            conn,
+            options,
+            _mode: mode,
+        })
     }
 
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, options: ParseOptions) -> Result<Self> {
         let conn = rusqlite::Connection::open_with_flags(
             path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE,
         )?;
         Ok(Self {
             conn,
+            options,
             _mode: Mode::OnDisk,
         })
     }
@@ -334,6 +344,11 @@ impl DocumentDb {
         parent_node_id: usize,
         element_name: &str,
     ) -> Result<Vec<model::Element>> {
+        let element_name = if self.options.case_insensitive {
+            Cow::Owned(element_name.to_lowercase())
+        } else {
+            Cow::Borrowed(element_name)
+        };
         let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_ns, node_name FROM nodes
@@ -381,6 +396,12 @@ impl DocumentDb {
         attr_name: &str,
         attr_ns: Option<&str>,
     ) -> Result<Option<model::Attr>> {
+        let attr_name = if self.options.case_insensitive {
+            Cow::Owned(attr_name.to_lowercase())
+        } else {
+            Cow::Borrowed(attr_name)
+        };
+
         if let Some(attr_ns) = attr_ns {
             self.conn
                 .query_row(
@@ -388,7 +409,7 @@ impl DocumentDb {
                     SELECT attr_id, attr_value
                     FROM attrs WHERE parent_node_id = ?1 AND attr_name = ?2 AND attr_ns = ?3
                 "#,
-                    (node_id, attr_name, attr_ns),
+                    (node_id, &attr_name, attr_ns),
                     |r| {
                         Ok(model::Attr {
                             attr_id: r.get::<_, usize>(0)?,
@@ -406,7 +427,7 @@ impl DocumentDb {
                     SELECT attr_id, attr_value
                     FROM attrs WHERE parent_node_id = ?1 AND attr_name = ?2 AND attr_ns IS NULL
                 "#,
-                    (node_id, attr_name),
+                    (node_id, &attr_name),
                     |r| {
                         Ok(model::Attr {
                             attr_id: r.get::<_, usize>(0)?,
@@ -563,6 +584,11 @@ impl DocumentDb {
         attr_name: &str,
         attr_value: &str,
     ) -> Result<Vec<model::Element>> {
+        let attr_name = if self.options.case_insensitive {
+            Cow::Owned(attr_name.to_lowercase())
+        } else {
+            Cow::Borrowed(attr_name)
+        };
         let statement = self.conn.prepare(
             r#"
                 SELECT n.node_id, n.node_ns, n.node_name, n.node_value FROM attrs a 
@@ -572,7 +598,7 @@ impl DocumentDb {
         )?;
 
         statement
-            .query_map([attr_name, attr_value], |r| {
+            .query_map((attr_name, attr_value), |r| {
                 Ok(model::Element {
                     node_id: r.get::<_, usize>(0)?,
                     ns: r.get::<_, Option<String>>(1)?,

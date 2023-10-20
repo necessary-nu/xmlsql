@@ -123,7 +123,7 @@ pub enum Error {
     Channel(#[from] crossbeam_channel::SendError<Message>),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct ParseOptions {
     pub ignore_whitespace: bool,
     pub infer_types: bool,
@@ -145,15 +145,10 @@ fn mutate_text(text: &str, options: &ParseOptions) -> String {
     }
 }
 
-pub(crate) fn parse(
-    doc_db: DocumentDb,
-    input: &str,
-    options: ParseOptions,
-) -> Result<DocumentDb, Error> {
-    // let mut reader = Reader::from_reader(std::io::Cursor::new(input));
-    // reader.trim_text(options.ignore_whitespace);
+pub(crate) fn parse(doc_db: DocumentDb, input: &str) -> Result<DocumentDb, Error> {
+    let options = doc_db.options;
 
-    let (mut tx, rx) = crossbeam_channel::bounded(10000000);
+    let (mut tx, rx) = crossbeam_channel::bounded(1000000);
 
     let handle = std::thread::spawn(move || {
         let rx = rx;

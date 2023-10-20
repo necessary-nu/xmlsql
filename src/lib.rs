@@ -50,16 +50,16 @@ pub fn parse_to_disk<P: AsRef<Path>>(
     input: &str,
     options: ParseOptions,
 ) -> Result<DocumentDb, Error> {
-    let db = DocumentDb::create(db_path.as_ref(), options.infer_types)?;
-    parse::parse(db, input, options)
+    let db = DocumentDb::create(db_path.as_ref(), options)?;
+    parse::parse(db, input)
 }
 
 pub fn parse_to_temp_file(input: &str, options: ParseOptions) -> Result<DocumentDb, Error> {
-    let db = DocumentDb::create_temp(options.infer_types)?;
-    parse::parse(db, input, options)
+    let db = DocumentDb::create_temp(options)?;
+    parse::parse(db, input)
 }
 
 pub fn parse_in_memory(input: &str, options: ParseOptions) -> Result<DocumentDb, Error> {
-    let db = DocumentDb::create_in_memory(options.infer_types)?;
-    parse::parse(db, input, options)
+    let db = DocumentDb::create_in_memory(options)?;
+    parse::parse(db, input)
 }
