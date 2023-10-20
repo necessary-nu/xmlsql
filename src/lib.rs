@@ -20,8 +20,8 @@ pub fn parse_path_to_disk<P: AsRef<Path>, Q: AsRef<Path>>(
     options: ParseOptions,
 ) -> Result<DocumentDb, Error> {
     let f = unsafe { memmap2::Mmap::map(&std::fs::File::open(path).unwrap()).unwrap() };
-    f.advise(memmap2::Advice::Sequential).unwrap();
-    let s = unsafe { std::str::from_utf8_unchecked(&f) };
+    // f.advise(memmap2::Advice::Sequential).unwrap();
+    let s = std::str::from_utf8(&f)?;
     parse_to_disk(db_path, s, options)
 }
 
@@ -30,15 +30,18 @@ pub fn parse_path_in_memory<P: AsRef<Path>>(
     options: ParseOptions,
 ) -> Result<DocumentDb, Error> {
     let f = unsafe { memmap2::Mmap::map(&std::fs::File::open(path).unwrap()).unwrap() };
-    f.advise(memmap2::Advice::Sequential).unwrap();
-    let s = unsafe { std::str::from_utf8_unchecked(&f) };
+    // f.advise(memmap2::Advice::Sequential).unwrap();
+    let s = std::str::from_utf8(&f)?;
     parse_in_memory(s, options)
 }
 
-pub fn parse_path_to_temp_file<P: AsRef<Path>>(path: P, options: ParseOptions) -> Result<DocumentDb, Error> {
+pub fn parse_path_to_temp_file<P: AsRef<Path>>(
+    path: P,
+    options: ParseOptions,
+) -> Result<DocumentDb, Error> {
     let f = unsafe { memmap2::Mmap::map(&std::fs::File::open(path).unwrap()).unwrap() };
-    f.advise(memmap2::Advice::Sequential).unwrap();
-    let s = unsafe { std::str::from_utf8_unchecked(&f) };
+    // f.advise(memmap2::Advice::Sequential).unwrap();
+    let s = std::str::from_utf8(&f)?;
     parse_to_temp_file(s, options)
 }
 

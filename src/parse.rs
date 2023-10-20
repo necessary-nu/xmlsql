@@ -1,11 +1,4 @@
-use std::io::BufRead;
-
 use xmlparser::{self, ElementEnd, Token};
-
-// use quick_xml::{
-//     events::{BytesStart, Event},
-//     Reader,
-// };
 
 use crate::{
     builder::{DocumentDbBuilder, InsertAttr, InsertNode, InsertRootElement},
@@ -134,12 +127,22 @@ pub enum Error {
 pub struct ParseOptions {
     pub ignore_whitespace: bool,
     pub infer_types: bool,
+    pub case_insensitive: bool,
 }
 
 pub enum Message {
     InsertNode(InsertNode),
     InsertAttr(InsertAttr),
     InsertRootElement(InsertRootElement),
+}
+
+fn mutate_text(text: &str, options: &ParseOptions) -> String {
+    match (options.ignore_whitespace, options.case_insensitive) {
+        (true, true) => text.trim().to_lowercase(),
+        (true, false) => text.trim().to_string(),
+        (false, true) => text.to_lowercase(),
+        (false, false) => text.to_string(),
+    }
 }
 
 pub(crate) fn parse(
@@ -205,12 +208,7 @@ pub(crate) fn parse(
         // println!("{:?}", token);
 
         match token {
-            Token::Declaration {
-                version,
-                encoding,
-                standalone,
-                span,
-            } => {
+            Token::Declaration { .. } => {
                 tx.send(Message::InsertNode(InsertNode::new(
                     node_id_count,
                     parent_node_id,
@@ -224,11 +222,7 @@ pub(crate) fn parse(
                 node_id_count += 1;
                 parser_state.increment_order();
             }
-            Token::ProcessingInstruction {
-                target,
-                content,
-                span,
-            } => {
+            Token::ProcessingInstruction { .. } => {
                 tx.send(Message::InsertNode(InsertNode::new(
                     node_id_count,
                     parent_node_id,
@@ -242,7 +236,7 @@ pub(crate) fn parse(
                 node_id_count += 1;
                 parser_state.increment_order();
             }
-            Token::Comment { text, span } => {
+            Token::Comment { text, .. } => {
                 tx.send(Message::InsertNode(InsertNode::new(
                     node_id_count,
                     parent_node_id,
@@ -260,11 +254,7 @@ pub(crate) fn parse(
                 node_id_count += 1;
                 parser_state.increment_order();
             }
-            Token::DtdStart {
-                name,
-                external_id,
-                span,
-            } => {
+            Token::DtdStart { .. } => {
                 tx.send(Message::InsertNode(InsertNode::new(
                     node_id_count,
                     parent_node_id,
@@ -278,30 +268,23 @@ pub(crate) fn parse(
                 node_id_count += 1;
                 parser_state.increment_order();
             }
-            Token::EmptyDtd {
-                name,
-                external_id,
-                span,
-            } => {}
-            Token::EntityDeclaration {
-                name,
-                definition,
-                span,
-            } => {}
-            Token::DtdEnd { span } => {}
+            Token::EmptyDtd { .. } => {}
+            Token::EntityDeclaration { .. } => {}
+            Token::DtdEnd { .. } => {}
             Token::ElementStart {
                 prefix,
                 local,
                 span,
             } => {
+                let local = mutate_text(&*local, &options);
                 let prefix = if !prefix.is_empty() {
-                    Some(&*prefix)
+                    Some(mutate_text(&*prefix, &options))
                 } else {
                     None
                 };
                 parse_start_event(
                     &local,
-                    prefix,
+                    prefix.as_deref(),
                     span.start(),
                     &mut parser_state,
                     &mut tx,
@@ -315,13 +298,13 @@ pub(crate) fn parse(
                 span,
             } => {
                 let prefix = if !prefix.is_empty() {
-                    Some(&*prefix)
+                    Some(mutate_text(&*prefix, &options))
                 } else {
                     None
                 };
 
                 let local = if !local.is_empty() {
-                    Some(&*local)
+                    Some(mutate_text(&*local, &options))
                 } else {
                     None
                 };
@@ -334,15 +317,15 @@ pub(crate) fn parse(
 
                 tx.send(Message::InsertAttr(InsertAttr::new(
                     parent_node_id,
-                    prefix.map(|x| x.to_string()),
-                    local.map(|x| x.to_string()).unwrap_or_default(),
+                    prefix,
+                    local.unwrap_or_default(),
                     value.map(|x| x.to_string()).unwrap_or_default(),
                     span.start(),
                     parser_state.current_order(),
                 )))?;
                 parser_state.increment_order();
             }
-            Token::ElementEnd { end, span } => match end {
+            Token::ElementEnd { end, .. } => match end {
                 ElementEnd::Open => continue,
                 ElementEnd::Close(_, _) | ElementEnd::Empty => {
                     parser_state.pop();
@@ -366,7 +349,7 @@ pub(crate) fn parse(
                 node_id_count += 1;
                 parser_state.increment_order();
             }
-            Token::Cdata { text, span } => {
+            Token::Cdata { text, .. } => {
                 tx.send(Message::InsertNode(InsertNode::new(
                     node_id_count,
                     parent_node_id,

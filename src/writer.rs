@@ -222,16 +222,10 @@ impl Print<Config, State<'_>> for Element {
         config: &Config,
         context: &State<'_>,
     ) -> std::io::Result<()> {
-        let nodes = context
-            .doc
-            .child_nodes(self.node_id)
-            .unwrap();
+        let nodes = context.doc.child_nodes(self.node_id).unwrap();
 
         if nodes.is_empty() {
-            let attrs = context
-                .doc
-                .attrs(self.node_id)
-                .unwrap();
+            let attrs = context.doc.attrs(self.node_id).unwrap();
             if !attrs.is_empty() {
                 write!(f, "{:>indent$}<{}", "", self.name, indent = context.indent)?;
                 let line_length = &self.name.len()
@@ -277,10 +271,7 @@ impl Print<Config, State<'_>> for Element {
             .iter()
             .any(|x| matches!(x, Node::Text(_) | Node::CData(_)));
 
-        let attrs = context
-            .doc
-            .attrs(self.node_id)
-            .unwrap();
+        let attrs = context.doc.attrs(self.node_id).unwrap();
         if !attrs.is_empty() {
             write!(f, "{:>indent$}<{}", "", self.name, indent = context.indent)?;
             let line_length = &self.name.len()

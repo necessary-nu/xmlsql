@@ -285,10 +285,7 @@ impl DocumentDb {
         Ok(pos)
     }
 
-    pub fn child_nodes(
-        &self,
-        parent_node_id: usize,
-    ) -> Result<Vec<model::Node>> {
+    pub fn child_nodes(&self, parent_node_id: usize) -> Result<Vec<model::Node>> {
         let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_type, node_ns, node_name, node_value FROM nodes
@@ -298,22 +295,21 @@ impl DocumentDb {
         "#,
         )?;
 
-        statement.query_map([parent_node_id], |r| {
-            Ok(model::RawNode {
-                node_id: r.get::<_, usize>(0)?,
-                node_type: NodeType::try_from(r.get::<_, u8>(1)?).unwrap(),
-                ns: r.get::<_, Option<String>>(2)?,
-                name: r.get::<_, Option<String>>(3)?,
-                value: r.get::<_, Option<String>>(4)?,
-            }
-            .into())
-        })?.collect()
+        statement
+            .query_map([parent_node_id], |r| {
+                Ok(model::RawNode {
+                    node_id: r.get::<_, usize>(0)?,
+                    node_type: NodeType::try_from(r.get::<_, u8>(1)?).unwrap(),
+                    ns: r.get::<_, Option<String>>(2)?,
+                    name: r.get::<_, Option<String>>(3)?,
+                    value: r.get::<_, Option<String>>(4)?,
+                }
+                .into())
+            })?
+            .collect()
     }
 
-    pub fn children(
-        &self,
-        parent_node_id: usize,
-    ) -> Result<Vec<model::Element>> {
+    pub fn children(&self, parent_node_id: usize) -> Result<Vec<model::Element>> {
         let statement = self.conn.prepare_cached(
             r#"
             SELECT node_id, node_ns, node_name FROM nodes
@@ -322,13 +318,15 @@ impl DocumentDb {
         "#,
         )?;
 
-        statement.query_map([parent_node_id, NodeType::Element as usize], |r| {
-            Ok(model::Element {
-                node_id: r.get::<_, usize>(0)?,
-                ns: r.get::<_, Option<String>>(1)?,
-                name: r.get::<_, String>(2)?,
-            })
-        })?.collect()
+        statement
+            .query_map([parent_node_id, NodeType::Element as usize], |r| {
+                Ok(model::Element {
+                    node_id: r.get::<_, usize>(0)?,
+                    ns: r.get::<_, Option<String>>(1)?,
+                    name: r.get::<_, String>(2)?,
+                })
+            })?
+            .collect()
     }
 
     pub fn children_by_name(
@@ -346,16 +344,18 @@ impl DocumentDb {
         "#,
         )?;
 
-        statement.query_map(
-            (parent_node_id, NodeType::Element as usize, element_name),
-            |r| {
-                Ok(model::Element {
-                    node_id: r.get::<_, usize>(0)?,
-                    ns: r.get::<_, Option<String>>(1)?,
-                    name: r.get::<_, String>(2)?,
-                })
-            },
-        )?.collect()
+        statement
+            .query_map(
+                (parent_node_id, NodeType::Element as usize, element_name),
+                |r| {
+                    Ok(model::Element {
+                        node_id: r.get::<_, usize>(0)?,
+                        ns: r.get::<_, Option<String>>(1)?,
+                        name: r.get::<_, String>(2)?,
+                    })
+                },
+            )?
+            .collect()
     }
 
     pub fn attr(&self, attr_id: usize) -> Result<model::Attr> {
@@ -427,14 +427,16 @@ impl DocumentDb {
             "#,
         )?;
 
-        statement.query_map([node_id], |r| {
-            Ok(model::Attr {
-                attr_id: r.get::<_, usize>(0)?,
-                ns: r.get::<_, Option<String>>(1)?,
-                name: r.get::<_, String>(2)?,
-                value: r.get::<_, String>(3)?,
-            })
-        })?.collect()
+        statement
+            .query_map([node_id], |r| {
+                Ok(model::Attr {
+                    attr_id: r.get::<_, usize>(0)?,
+                    ns: r.get::<_, Option<String>>(1)?,
+                    name: r.get::<_, String>(2)?,
+                    value: r.get::<_, String>(3)?,
+                })
+            })?
+            .collect()
     }
 
     pub fn has_children(&self, node_id: usize) -> Result<bool> {
@@ -457,10 +459,7 @@ impl DocumentDb {
         self.element(1)
     }
 
-    pub fn descendent_nodes(
-        &self,
-        parent_node_id: usize,
-    ) -> Result<Vec<model::Node>> {
+    pub fn descendent_nodes(&self, parent_node_id: usize) -> Result<Vec<model::Node>> {
         let stmt = self.conn.prepare_cached(
             r#"
             WITH RECURSIVE descendents(parent_id) AS (
@@ -483,13 +482,11 @@ impl DocumentDb {
                 value: r.get::<_, Option<String>>(4)?,
             }
             .into())
-        })?.collect()
+        })?
+        .collect()
     }
 
-    pub fn descendents(
-        &self,
-        parent_node_id: usize,
-    ) -> Result<Vec<model::Element>> {
+    pub fn descendents(&self, parent_node_id: usize) -> Result<Vec<model::Element>> {
         let stmt = self.conn.prepare_cached(
             r#"
             WITH RECURSIVE descendents(parent_id) AS (
@@ -509,7 +506,8 @@ impl DocumentDb {
                 ns: r.get(1)?,
                 name: r.get(2)?,
             })
-        })?.collect()
+        })?
+        .collect()
     }
 
     pub fn all_elements(&self) -> Result<Vec<model::Element>> {
@@ -560,7 +558,11 @@ impl DocumentDb {
         Ok(result.parse().unwrap())
     }
 
-    pub fn elements_matching_attr_value(&self, attr_name: &str, attr_value: &str) -> Result<Vec<model::Element>> {
+    pub fn elements_matching_attr_value(
+        &self,
+        attr_name: &str,
+        attr_value: &str,
+    ) -> Result<Vec<model::Element>> {
         let statement = self.conn.prepare(
             r#"
                 SELECT n.node_id, n.node_ns, n.node_name, n.node_value FROM attrs a 
@@ -569,13 +571,15 @@ impl DocumentDb {
             "#,
         )?;
 
-        statement.query_map([attr_name, attr_value], |r| {
-            Ok(model::Element {
-                node_id: r.get::<_, usize>(0)?,
-                ns: r.get::<_, Option<String>>(1)?,
-                name: r.get::<_, String>(2)?,
-            })
-        })?.collect()
+        statement
+            .query_map([attr_name, attr_value], |r| {
+                Ok(model::Element {
+                    node_id: r.get::<_, usize>(0)?,
+                    ns: r.get::<_, Option<String>>(1)?,
+                    name: r.get::<_, String>(2)?,
+                })
+            })?
+            .collect()
     }
 
     #[inline]
